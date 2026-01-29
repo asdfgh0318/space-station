@@ -1,0 +1,603 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Radio Telescope and Antenna Tracker Project</title>
+<style>
+@page {
+    size: A4;
+    margin: 2cm;
+}
+body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+    line-height: 1.6;
+    color: #24292e;
+    max-width: 900px;
+    margin: 0 auto;
+    padding: 2cm;
+    font-size: 11pt;
+}
+h1 {
+    border-bottom: 2px solid #0366d6;
+    padding-bottom: 0.3em;
+    color: #0366d6;
+    font-size: 24pt;
+    margin-top: 1.5em;
+}
+h2 {
+    border-bottom: 1px solid #eaecef;
+    padding-bottom: 0.3em;
+    color: #24292e;
+    font-size: 18pt;
+    margin-top: 1.5em;
+    page-break-after: avoid;
+}
+h3 {
+    color: #0366d6;
+    font-size: 14pt;
+    margin-top: 1.2em;
+    page-break-after: avoid;
+}
+h4 {
+    color: #586069;
+    font-size: 12pt;
+    page-break-after: avoid;
+}
+table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1em 0;
+    font-size: 10pt;
+    page-break-inside: avoid;
+}
+th, td {
+    border: 1px solid #dfe2e5;
+    padding: 6px 13px;
+    text-align: left;
+}
+th {
+    background-color: #f6f8fa;
+    font-weight: 600;
+}
+tr:nth-child(even) {
+    background-color: #f6f8fa;
+}
+code {
+    background-color: #f6f8fa;
+    border-radius: 3px;
+    padding: 0.2em 0.4em;
+    font-size: 90%;
+    font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+pre {
+    background-color: #f6f8fa;
+    border-radius: 6px;
+    padding: 16px;
+    overflow-x: auto;
+    font-size: 9pt;
+    line-height: 1.45;
+    page-break-inside: avoid;
+}
+pre code {
+    background-color: transparent;
+    padding: 0;
+}
+a {
+    color: #0366d6;
+    text-decoration: none;
+}
+hr {
+    border: none;
+    border-top: 2px solid #eaecef;
+    margin: 2em 0;
+}
+strong {
+    color: #24292e;
+}
+ul, ol {
+    padding-left: 2em;
+}
+li {
+    margin: 0.25em 0;
+}
+.header {
+    text-align: center;
+    margin-bottom: 2em;
+    padding-bottom: 1em;
+    border-bottom: 3px solid #0366d6;
+}
+.header h1 {
+    border: none;
+    margin-bottom: 0.2em;
+}
+.header p {
+    color: #586069;
+    font-size: 12pt;
+}
+@media print {
+    body {
+        padding: 0;
+    }
+    h2 {
+        page-break-before: auto;
+    }
+    pre, table {
+        page-break-inside: avoid;
+    }
+}
+</style>
+</head>
+<body>
+<div class="header">
+<p style="color: #586069; font-size: 10pt;">Prepared January 2026 | For review and consultation</p>
+</div>
+<h1 id="radio-telescope-antenna-tracker-project">Radio Telescope &amp; Antenna Tracker Project</h1>
+<h2 id="project-vision">Project Vision</h2>
+<p>Incremental build of an antenna-tracked radio telescope system, starting with automated weather satellite reception and a weather prediction AI for Warsaw, then expanding into radio astronomy and citizen science contributions.</p>
+<hr />
+<h2 id="phase-1-automated-weather-satellite-station-weather-ai">PHASE 1: Automated Weather Satellite Station + Weather AI</h2>
+<h3 id="1a-meteor-m-lrpt-reception-no-tracker-needed-60-100">1A: Meteor-M LRPT Reception (No Tracker Needed) — ~$60-100</h3>
+<p>The easiest and fastest entry point. Meteor-M N2-3/N2-4 are Russian polar-orbiting weather satellites transmitting at 137 MHz. Multiple passes over Warsaw daily. No tracking needed (omnidirectional antenna). Will be available into the 2040s.</p>
+<p><strong>Important context</strong>: All NOAA POES satellites (15, 18, 19) were decommissioned in mid-2025. Meteor-M is now the primary 137 MHz weather satellite. From Warsaw, GOES satellites are NOT visible (geostationary over Americas).</p>
+<h4 id="hardware">Hardware</h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Cost</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>RTL-SDR Blog V4</td>
+<td>~$35</td>
+<td>Main receiver</td>
+</tr>
+<tr>
+<td>QFH antenna (DIY)</td>
+<td>~$10-15</td>
+<td>Copper pipe + PVC, circularly polarized</td>
+</tr>
+<tr>
+<td>SAW filter + LNA (137 MHz)</td>
+<td>~$15-25</td>
+<td>Optional but recommended for Warsaw RFI</td>
+</tr>
+<tr>
+<td>Raspberry Pi 4/5</td>
+<td>~$50-80</td>
+<td>Or use existing PC</td>
+</tr>
+<tr>
+<td>SMA cables, adapters</td>
+<td>~$10</td>
+<td></td>
+</tr>
+</tbody>
+</table>
+<h4 id="software-stack">Software Stack</h4>
+<ul>
+<li><strong>SatDump</strong> (satdump.org) — all-in-one: satellite tracking, SDR control, decoding, image generation. Has built-in automation (auto-track, auto-record, auto-decode). Replaces the old chain of 6+ programs</li>
+<li>Runs on Raspberry Pi 5 or any Linux box</li>
+<li>Outputs: visible light images, infrared images, false-color composites, map overlays</li>
+</ul>
+<h4 id="what-you-get">What you get</h4>
+<ul>
+<li>1 km/px resolution images of Europe (JPEG compressed but good)</li>
+<li>3 spectral channels (visible, near-IR, thermal IR)</li>
+<li>Multiple passes/day, automated capture 24/7</li>
+<li>Cloud patterns, storm systems, snow cover over Warsaw region</li>
+</ul>
+<h3 id="1b-hrpt-reception-with-antenna-tracker-300-500-additional">1B: HRPT Reception with Antenna Tracker — ~$300-500 additional</h3>
+<p>The big upgrade: high-resolution, uncompressed multi-channel imagery. This requires building the antenna tracker (your main engineering project).</p>
+<h4 id="receivable-satellites-from-warsaw-with-hrpt-17-ghz-l-band">Receivable satellites from Warsaw with HRPT (1.7 GHz, L-band)</h4>
+<table>
+<thead>
+<tr>
+<th>Satellite</th>
+<th>Operator</th>
+<th>Status</th>
+<th>Data</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Meteor-M N2-3</td>
+<td>Roscosmos</td>
+<td>Active</td>
+<td>6 channels, 1 km, uncompressed</td>
+</tr>
+<tr>
+<td>Meteor-M N2-4</td>
+<td>Roscosmos</td>
+<td>Active</td>
+<td>6 channels, 1 km, uncompressed</td>
+</tr>
+<tr>
+<td>Metop-B</td>
+<td>EUMETSAT</td>
+<td>Until ~2027</td>
+<td>6 channels AVHRR, 1 km</td>
+</tr>
+<tr>
+<td>Metop-C</td>
+<td>EUMETSAT</td>
+<td>Until ~2030</td>
+<td>6 channels AVHRR, 1 km</td>
+</tr>
+<tr>
+<td>AWS (Arctic Weather Sat)</td>
+<td>ESA</td>
+<td>Active</td>
+<td>Microwave radiometer</td>
+</tr>
+</tbody>
+</table>
+<h4 id="hardware-antenna-tracker-custom-build">Hardware — Antenna Tracker (custom build)</h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Cost</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>2x NEMA23 stepper motors</td>
+<td>$30-60</td>
+<td>Torque for dish + wind</td>
+</tr>
+<tr>
+<td>2x TMC2209 stepper drivers</td>
+<td>$10-20</td>
+<td>Silent, reliable</td>
+</tr>
+<tr>
+<td>ESP32 dev board</td>
+<td>$8-12</td>
+<td>Rotator controller</td>
+</tr>
+<tr>
+<td>GT2 timing belt + pulleys (80T+20T)</td>
+<td>$15-20</td>
+<td>4:1 first stage reduction</td>
+</tr>
+<tr>
+<td>Worm gear set (or 3D printed)</td>
+<td>$15-30</td>
+<td>Second stage, 10:1-15:1</td>
+</tr>
+<tr>
+<td>6200/6201 bearings (4-6x)</td>
+<td>$10-20</td>
+<td>AZ and EL axes</td>
+</tr>
+<tr>
+<td>2040 aluminum extrusion</td>
+<td>$20-40</td>
+<td>Frame structure</td>
+</tr>
+<tr>
+<td>3D printed parts (PETG)</td>
+<td>$20-25</td>
+<td>Gear housings, mounts, adapters</td>
+</tr>
+<tr>
+<td>Slip ring (12-wire)</td>
+<td>$10-15</td>
+<td>Cable management through AZ axis</td>
+</tr>
+<tr>
+<td>Steel plate/tube (base)</td>
+<td>workshop</td>
+<td>Welded base for rooftop mount</td>
+</tr>
+<tr>
+<td>Weatherproof enclosure</td>
+<td>$15-25</td>
+<td>For electronics</td>
+</tr>
+<tr>
+<td>AS5600 magnetic encoders (2x)</td>
+<td>$5-10</td>
+<td>Position feedback</td>
+</tr>
+</tbody>
+</table>
+<h4 id="hardware-rf-chain">Hardware — RF Chain</h4>
+<table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Cost</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>80-100cm offset satellite dish</td>
+<td>$0-50</td>
+<td>Used, from classifieds (OLX.pl)</td>
+</tr>
+<tr>
+<td>L-band helicone feed (3D printed)</td>
+<td>$5-10</td>
+<td>Popular open-source design</td>
+</tr>
+<tr>
+<td>Nooelec SAWbird+ GOES LNA</td>
+<td>~$35</td>
+<td>0.5 dB NF, filtered for 1.7 GHz</td>
+</tr>
+<tr>
+<td>Airspy Mini (upgrade from RTL-SDR)</td>
+<td>~$100</td>
+<td>12-bit, 6 MHz BW, much better for HRPT</td>
+</tr>
+</tbody>
+</table>
+<h4 id="tracker-software-your-code">Tracker Software (your code)</h4>
+<pre><code>Rotator Controller (ESP32, C/C++):
+├── Stepper motor control (AccelStepper library)
+├── AS5600 encoder feedback (I2C)
+├── EasyComm2 protocol over serial/WiFi
+├── Web interface for manual control
+├── Homing routine (limit switches or encoder)
+└── Wind stow mode (auto-park in high wind)
+
+Host Software (Python, Raspberry Pi):
+├── SatDump integration (autotrack + decode)
+├── Satellite pass prediction (pyorbital/skyfield)
+├── Rotator command interface (rotctld/Hamlib)
+├── Image post-processing pipeline
+├── Database for captured images + metadata
+└── API for weather AI module
+</code></pre>
+<h4 id="what-you-get_1">What you get</h4>
+<ul>
+<li>1 km/px UNCOMPRESSED images, 6 spectral channels</li>
+<li>Thermal IR for cloud-top temperatures</li>
+<li>Near-IR for vegetation, water vapor</li>
+<li>Multiple satellites per day = more frequent coverage of Warsaw</li>
+<li>Raw data for serious weather analysis</li>
+</ul>
+<h3 id="1c-geostationary-satellite-reception-fixed-dish-50-150-additional">1C: Geostationary Satellite Reception (Fixed Dish) — ~$50-150 additional</h3>
+<p>Add continuous weather monitoring from Elektro-L (Russian geostationary satellite being repositioned to cover Europe in late 2025/2026).</p>
+<h4 id="setup">Setup</h4>
+<ul>
+<li>Small fixed dish (60-80cm) pointed at Elektro-L N°3 (14.5°W from Warsaw = ~30° elevation, ~245° azimuth)</li>
+<li>Same L-band LNA + SDR as HRPT setup (can share or add second RTL-SDR)</li>
+<li>SatDump decodes LRIT/HRIT</li>
+<li>Full-disk images every 30 minutes, continuously</li>
+</ul>
+<p>Alternative: <strong>EUMETCast via DVB-S2</strong> — standard satellite TV setup pointed at Hotbird 13°E, provides Meteosat data. Requires EUMETSAT registration (free for non-commercial/educational use).</p>
+<h3 id="1d-weather-prediction-ai-software-project">1D: Weather Prediction AI — Software Project</h3>
+<p>This is the software centerpiece: an AI system that learns weather patterns from your satellite imagery and predicts weather for Warsaw.</p>
+<h4 id="architecture">Architecture</h4>
+<pre><code>┌─────────────────────────────────────────────────────────┐
+│                   Weather AI System                      │
+├─────────────────────────────────────────────────────────┤
+│                                                          │
+│  DATA COLLECTION                                         │
+│  ├── Satellite images (your captures)                    │
+│  │   ├── Meteor-M LRPT (137 MHz, automated)             │
+│  │   ├── Meteor-M/Metop HRPT (1.7 GHz, tracked)         │
+│  │   └── Elektro-L HRIT (geostationary, continuous)      │
+│  ├── Ground truth weather data                           │
+│  │   ├── IMGW API (Polish Met Institute)                 │
+│  │   ├── OpenWeatherMap API (current + historical)       │
+│  │   └── Your own weather station (optional, future)     │
+│  └── Timestamp + geolocation metadata                    │
+│                                                          │
+│  DATA PIPELINE                                           │
+│  ├── Image preprocessing                                 │
+│  │   ├── Georeferencing (map projection)                 │
+│  │   ├── Crop to Warsaw region (~200km radius)           │
+│  │   ├── Normalize channels                              │
+│  │   ├── Cloud classification (IR thresholding)          │
+│  │   └── RFI artifact removal                            │
+│  ├── Feature extraction                                  │
+│  │   ├── Cloud coverage %                                │
+│  │   ├── Cloud motion vectors (consecutive images)       │
+│  │   ├── Cloud-top temperature distribution              │
+│  │   ├── Visible albedo patterns                         │
+│  │   └── Temporal sequences (last N images)              │
+│  └── Storage (PostgreSQL + image files)                  │
+│                                                          │
+│  AI MODELS                                               │
+│  ├── Nowcasting (0-6 hours)                              │
+│  │   ├── ConvLSTM / U-Net for cloud motion prediction    │
+│  │   ├── Input: sequence of satellite images             │
+│  │   └── Output: predicted cloud/rain patterns           │
+│  ├── Short-term forecast (6-24 hours)                    │
+│  │   ├── Transformer-based sequence model                │
+│  │   ├── Input: satellite images + weather features      │
+│  │   └── Output: temperature, precipitation, cloud cover │
+│  └── Evaluation                                          │
+│      ├── Compare vs actual weather (IMGW data)           │
+│      ├── Compare vs official forecast (IMGW/ECMWF)       │
+│      ├── Track accuracy metrics over time                │
+│      └── Skill score relative to persistence forecast    │
+│                                                          │
+│  DASHBOARD (Web)                                         │
+│  ├── Live satellite image viewer                         │
+│  ├── AI prediction display with confidence               │
+│  ├── Comparison: AI vs actual vs official forecast        │
+│  ├── Historical accuracy charts                          │
+│  └── Alerts for severe weather detection                 │
+│                                                          │
+└─────────────────────────────────────────────────────────┘
+</code></pre>
+<h4 id="tech-stack">Tech Stack</h4>
+<ul>
+<li><strong>Python</strong> — main language (PyTorch/TensorFlow, SatDump integration, data pipeline)</li>
+<li><strong>PostgreSQL</strong> + <strong>TimescaleDB</strong> — time-series weather data + image metadata</li>
+<li><strong>FastAPI</strong> — backend API</li>
+<li><strong>React or Svelte</strong> — dashboard frontend</li>
+<li><strong>PyTorch</strong> — model training (ConvLSTM, U-Net, or transformer)</li>
+<li><strong>Docker</strong> — containerized deployment on Raspberry Pi 5 or mini PC</li>
+</ul>
+<h4 id="open-source-models-to-build-on">Open-Source Models to Build On</h4>
+<ul>
+<li><strong>NPM</strong> (github.com/seominseok0429/Data-driven-Precipitation-Nowcasting-Using-Satellite-Imagery) — directly uses satellite imagery, 2 km resolution</li>
+<li><strong>OpenClimatefix skillful_nowcasting</strong> — DeepMind DGMR reimplementation</li>
+<li><strong>ConvLSTM</strong> implementations for sequence prediction</li>
+<li><strong>Awesome-LWMs</strong> (github.com/jaychempan/Awesome-LWMs) — curated list of weather AI models</li>
+</ul>
+<h4 id="training-data-strategy">Training Data Strategy</h4>
+<ol>
+<li><strong>Bootstrap</strong>: Start collecting satellite images + corresponding IMGW weather data from day 1</li>
+<li><strong>Pre-train</strong>: Use publicly available satellite datasets (SEVIR, EarthNet2021) for initial model training</li>
+<li><strong>Fine-tune</strong>: Once you have weeks/months of Warsaw-specific data, fine-tune on your own captures</li>
+<li><strong>Iterate</strong>: Continuously retrain as more data accumulates</li>
+</ol>
+<h4 id="warsaw-specific-weather-data-sources">Warsaw-Specific Weather Data Sources</h4>
+<ul>
+<li><strong>IMGW (Instytut Meteorologii i Gospodarki Wodnej)</strong> — Polish meteorological data API</li>
+<li><strong>OpenWeatherMap</strong> — free tier: current weather, 5-day forecast, historical data</li>
+<li><strong>Open-Meteo</strong> — free, open-source weather API, historical + forecast data</li>
+<li><strong>ECMWF</strong> — European Centre for Medium-Range Weather Forecasts (open data)</li>
+</ul>
+<hr />
+<h2 id="phase-2-radio-astronomy-future-100-300-additional">PHASE 2: Radio Astronomy (Future, ~$100-300 additional)</h2>
+<p>After the weather station is operational, add radio astronomy capability to the same tracked dish:</p>
+<ul>
+<li>Swap/add a 1420 MHz feed horn + SAWbird+ H1 LNA</li>
+<li>Hydrogen line detection and Milky Way mapping</li>
+<li>Join SARA, contribute data</li>
+<li>Same tracker, same SDR infrastructure</li>
+</ul>
+<h2 id="phase-3-large-dish-advanced-targets-future-500-1500">PHASE 3: Large Dish + Advanced Targets (Future, ~$500-1500)</h2>
+<ul>
+<li>Upgrade to 2-3m dish (used TVRO)</li>
+<li>Upgrade SDR to SDRplay RSPdx (14-bit)</li>
+<li>Pulsar detection attempts</li>
+<li>Join SatNOGS network, Wow@Home</li>
+<li>Multi-band capability</li>
+</ul>
+<hr />
+<h2 id="project-repository-structure">Project Repository Structure</h2>
+<pre><code>space-station/
+├── firmware/                    # ESP32 rotator controller
+│   ├── src/
+│   │   ├── main.cpp
+│   │   ├── stepper_control.cpp
+│   │   ├── easycomm.cpp        # EasyComm2 protocol
+│   │   ├── encoder.cpp         # AS5600 position feedback
+│   │   └── web_server.cpp      # Status + manual control
+│   └── platformio.ini
+├── tracker/                     # Host-side tracking software
+│   ├── scheduler.py            # Satellite pass scheduler
+│   ├── rotator.py              # Rotator communication
+│   ├── satdump_integration.py  # SatDump automation hooks
+│   └── config.yaml
+├── weather-ai/                  # Weather prediction AI
+│   ├── data/
+│   │   ├── collectors/          # IMGW, OpenWeatherMap scrapers
+│   │   ├── pipeline.py          # Image preprocessing
+│   │   └── dataset.py           # PyTorch dataset class
+│   ├── models/
+│   │   ├── nowcast.py           # ConvLSTM nowcasting model
+│   │   ├── forecast.py          # Transformer forecast model
+│   │   └── evaluate.py          # Accuracy metrics
+│   ├── api/
+│   │   └── main.py              # FastAPI backend
+│   └── train.py
+├── dashboard/                   # Web frontend
+│   ├── src/
+│   └── package.json
+├── hardware/                    # CAD files, wiring diagrams
+│   ├── rotator/                 # 3D print STL files
+│   ├── antenna/                 # QFH, feed horn designs
+│   └── enclosure/
+├── docs/
+│   ├── build-guide.md
+│   └── calibration.md
+├── docker-compose.yml
+└── README.md
+</code></pre>
+<hr />
+<h2 id="implementation-order">Implementation Order</h2>
+<h3 id="sprint-1-get-images-flowing">Sprint 1: Get Images Flowing</h3>
+<ol>
+<li>Order RTL-SDR V4, build QFH antenna</li>
+<li>Install SatDump on Raspberry Pi / PC</li>
+<li>Receive first Meteor-M LRPT image</li>
+<li>Set up automated capture (SatDump autotrack)</li>
+<li>Build image storage database</li>
+<li>Start collecting IMGW/Open-Meteo weather data for Warsaw</li>
+</ol>
+<h3 id="sprint-2-build-the-tracker">Sprint 2: Build the Tracker</h3>
+<ol>
+<li>Design rotator in CAD (Fusion 360 / FreeCAD)</li>
+<li>3D print gear housings and structural parts</li>
+<li>Weld steel base frame</li>
+<li>Assemble mechanical system</li>
+<li>Write ESP32 firmware (stepper control + EasyComm2)</li>
+<li>Integrate with SatDump for automated HRPT tracking</li>
+</ol>
+<h3 id="sprint-3-hrpt-reception">Sprint 3: HRPT Reception</h3>
+<ol>
+<li>Acquire/build dish (80-100cm) + L-band feed</li>
+<li>Install LNA + cabling</li>
+<li>First tracked HRPT capture</li>
+<li>Set up multi-satellite automated schedule</li>
+</ol>
+<h3 id="sprint-4-weather-ai-v1">Sprint 4: Weather AI v1</h3>
+<ol>
+<li>Build data pipeline (satellite images → preprocessed dataset)</li>
+<li>Implement baseline model (ConvLSTM for cloud motion)</li>
+<li>Train on accumulated data + public datasets</li>
+<li>Build dashboard with live images + predictions</li>
+<li>Start tracking prediction accuracy vs actual weather</li>
+</ol>
+<h3 id="sprint-5-iterate-expand">Sprint 5: Iterate &amp; Expand</h3>
+<ol>
+<li>Improve AI model based on accuracy data</li>
+<li>Add Elektro-L geostationary reception</li>
+<li>Add radio astronomy capability (1420 MHz feed)</li>
+<li>Join SARA / SatNOGS communities</li>
+</ol>
+<hr />
+<h2 id="verification">Verification</h2>
+<h3 id="phase-1a-lrpt">Phase 1A (LRPT)</h3>
+<ul>
+<li>First Meteor-M image captured within first evening</li>
+<li>SatDump autotrack captures 4+ passes per day unattended</li>
+<li>Images show recognizable cloud patterns over Europe</li>
+</ul>
+<h3 id="phase-1b-hrpt-tracker">Phase 1B (HRPT + Tracker)</h3>
+<ul>
+<li>Rotator responds correctly to EasyComm2 commands</li>
+<li>Gpredict satellite tracking test: rotator follows predicted pass</li>
+<li>HRPT image quality visibly superior to LRPT (sharper, more channels)</li>
+<li>Tracker survives wind test (weights attached to simulate dish wind load)</li>
+</ul>
+<h3 id="phase-1d-weather-ai">Phase 1D (Weather AI)</h3>
+<ul>
+<li>Dashboard shows latest satellite images + weather data</li>
+<li>Nowcast model produces cloud predictions for next 1-3 hours</li>
+<li>Track "skill score" vs persistence baseline (just predicting "same as now")</li>
+<li>After 1+ month of data: compare AI accuracy vs IMGW official forecast</li>
+</ul>
+<hr />
+<h2 id="sources">Sources</h2>
+<ul>
+<li><a href="https://www.satdump.org/">SatDump</a> — all-in-one satellite decoding software</li>
+<li><a href="https://www.satdump.org/posts/beyond-poes-amateur-satellite-reception/">Beyond POES: Amateur Satellite Reception</a> — post-NOAA landscape</li>
+<li><a href="https://www.a-centauri.com/articoli/meteor-satellite-reception">Meteor-M Reception Guide</a> — Jacopo's comprehensive guide</li>
+<li><a href="https://www.rtl-sdr.com/a-comprehensive-beginners-guide-to-hrpt-weather-satellite-reception/">HRPT Beginners Guide</a></li>
+<li><a href="https://www.rtl-sdr.com/automating-noaa-apt-and-meteor-m2-lrpt-reception-with-satdump-1-1-2/">SatDump Automation</a></li>
+<li><a href="https://www.rtl-sdr.com/building-a-diy-azel-antenna-rotator-for-satellite-tracking/">Tysonpower DIY Rotator</a></li>
+<li><a href="https://wiki.satnogs.org/SatNOGS_Rotator_v3">SatNOGS Rotator v3</a></li>
+<li><a href="https://github.com/seominseok0429/Data-driven-Precipitation-Nowcasting-Using-Satellite-Imagery">NPM Precipitation Nowcasting</a></li>
+<li><a href="https://github.com/openclimatefix/skillful_nowcasting">DGMR Reimplementation</a></li>
+<li><a href="https://github.com/jaychempan/Awesome-LWMs">Awesome Large Weather Models</a></li>
+<li><a href="https://radio-astronomy.org/">SARA</a> — Society of Amateur Radio Astronomers</li>
+<li><a href="https://satnogs.org/">SatNOGS</a> — satellite ground station network</li>
+<li><a href="https://science.nasa.gov/citizen-science/radio-jove/">Radio JOVE</a></li>
+</ul>
+</body>
+</html>
