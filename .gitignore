@@ -33,3 +33,6 @@ targets/*.tle
 
 # Node (web dashboard)
 web/node_modules/
+
+# FreeCAD backups
+*.FCBak
