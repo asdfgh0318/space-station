@@ -1,0 +1,35 @@
+# Observation data (large files)
+data/spectra/
+data/images/
+data/logs/
+*.iq
+*.raw
+*.wav
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets
+.env
+credentials.json
+
+# TLE cache (auto-downloaded)
+targets/*.tle
+
+# Node (web dashboard)
+web/node_modules/
