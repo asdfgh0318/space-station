@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 120" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0d1117"/>
+      <stop offset="50%" stop-color="#0d1130"/>
+      <stop offset="100%" stop-color="#0d1117"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#8b5cf6" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="line" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#8b5cf6" stop-opacity="0"/>
+      <stop offset="20%" stop-color="#8b5cf6" stop-opacity="0.6"/>
+      <stop offset="80%" stop-color="#8b5cf6" stop-opacity="0.6"/>
+      <stop offset="100%" stop-color="#8b5cf6" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="1200" height="120" fill="url(#bg)"/>
+  <rect y="90" width="1200" height="30" fill="url(#accent)"/>
+
+  <!-- Decorative dots -->
+  <circle cx="643" cy="57" r="1" fill="#8b5cf6" opacity="0.03"/>
+<circle cx="286" cy="104" r="2" fill="#8b5cf6" opacity="0.04"/>
+<circle cx="729" cy="51" r="3" fill="#8b5cf6" opacity="0.05"/>
+<circle cx="372" cy="98" r="1" fill="#8b5cf6" opacity="0.06"/>
+<circle cx="815" cy="45" r="2" fill="#8b5cf6" opacity="0.07"/>
+<circle cx="458" cy="92" r="3" fill="#8b5cf6" opacity="0.03"/>
+<circle cx="901" cy="39" r="1" fill="#8b5cf6" opacity="0.04"/>
+<circle cx="544" cy="86" r="2" fill="#8b5cf6" opacity="0.05"/>
+<circle cx="987" cy="33" r="3" fill="#8b5cf6" opacity="0.06"/>
+<circle cx="630" cy="80" r="1" fill="#8b5cf6" opacity="0.07"/>
+<circle cx="273" cy="27" r="2" fill="#8b5cf6" opacity="0.03"/>
+<circle cx="716" cy="74" r="3" fill="#8b5cf6" opacity="0.04"/>
+
+
+  <!-- Accent line -->
+  <line x1="0" y1="118" x2="1200" y2="118" stroke="url(#line)" stroke-width="2"/>
+
+  <!-- Icon -->
+  <g color="#8b5cf6">
+    <g transform="translate(70,30) scale(0.85)" opacity="0.12">
+      <ellipse cx="35" cy="35" rx="35" ry="12" transform="rotate(-30,35,35)" fill="none" stroke="currentColor" stroke-width="2" stroke-dasharray="4,3"/>
+      <circle cx="35" cy="35" r="6" fill="currentColor"/>
+      <rect x="20" y="30" width="30" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="2"/>
+      <rect x="5" y="28" width="15" height="14" fill="none" stroke="currentColor" stroke-width="1.5"/>
+      <rect x="50" y="28" width="15" height="14" fill="none" stroke="currentColor" stroke-width="1.5"/>
+    </g>
+  </g>
+
+  <!-- Title -->
+  <text x="600" y="52" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="32" font-weight="700" fill="#e6edf3" text-anchor="middle" letter-spacing="1">Space Station</text>
+
+  <!-- Subtitle -->
+  <text x="600" y="78" font-family="system-ui,-apple-system,Segoe UI,sans-serif" font-size="14" fill="#8b949e" text-anchor="middle" letter-spacing="0.5">Radio telescope tracking & SDR integration</text>
+</svg>
