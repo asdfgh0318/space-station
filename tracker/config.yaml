@@ -1,151 +1,79 @@
 # Space Station - Antenna Tracker Configuration
-# All angles in degrees, distances in mm
+# Waveshare Stepper Motor HAT (B) + NEMA 17 + GT2 Belt Drive
 
 site:
   name: "Warsaw"
-  latitude: 52.2297   # degrees North
-  longitude: 21.0122  # degrees East
-  elevation: 100      # meters above sea level
+  latitude: 52.2297
+  longitude: 21.0122
+  elevation: 100
 
 tracker:
   type: "alt-az"
+  driver: "waveshare_hat_b"
 
   azimuth:
-    # Mechanical
-    gear_ratio: 80          # Worm gear 80:1
-    steps_per_rev: 200      # NEMA 17 full steps
-    microstepping: 16       # TMC2209 microstepping divisor
-    # Calculated: 200 * 16 * 80 = 256000 microsteps per revolution
-    # Resolution: 360 / 256000 = 0.001406 deg = 5.06 arcsec
+    # Mechanical — GT2 belt, 1:1 ratio (20T pulleys both ends)
+    gear_ratio: 1
+    steps_per_rev: 200       # NEMA 17 full steps
+    microstepping: 32        # Set via DIP switches on HAT (all switches at 1)
+    # Calculated: 200 * 32 * 1 = 6400 microsteps per revolution
+    # Resolution: 360 / 6400 = 0.05625 deg per microstep
 
-    # Limits
     min_angle: 0.0
     max_angle: 360.0
+    max_speed: 15.0          # deg/s
+    acceleration: 8.0        # deg/s^2
 
-    # Motor
-    max_speed: 5.0          # degrees per second (slew speed)
-    acceleration: 2.0       # degrees per second^2
-
-    # Encoder
-    encoder_i2c_address: 0x36  # AS5600 default
-    encoder_i2c_bus: 1
-
-    # GPIO pins (BCM numbering)
-    step_pin: 17
-    dir_pin: 27
-    enable_pin: 22
+    # GPIO pins — Waveshare HAT (B) Motor 1 (BCM numbering)
+    step_pin: 19
+    dir_pin: 13
+    enable_pin: 12
 
     # Homing
     home_switch_pin: 5
-    home_offset: 0.0       # degrees offset from switch to true north
+    home_switch_enabled: false  # No limit switches on bench
+    home_offset: 0.0
 
   elevation:
-    # Mechanical
-    gear_ratio: 60          # Worm gear 60:1
+    gear_ratio: 1
     steps_per_rev: 200
-    microstepping: 16
-    # Calculated: 200 * 16 * 60 = 192000 microsteps per revolution
-    # Resolution: 360 / 192000 = 0.001875 deg = 6.75 arcsec
+    microstepping: 32        # Set via DIP switches on HAT (all switches at 1)
 
-    # Limits
-    min_angle: 0.0          # horizon
-    max_angle: 90.0         # zenith
+    min_angle: 0.0
+    max_angle: 90.0
+    max_speed: 12.0
+    acceleration: 6.0
 
-    # Motor
-    max_speed: 3.0
-    acceleration: 1.5
-
-    # Encoder
-    encoder_i2c_address: 0x37  # Second AS5600 (address changed via pin)
-    encoder_i2c_bus: 1
-
-    # GPIO pins
-    step_pin: 23
+    # GPIO pins — Waveshare HAT (B) Motor 2
+    step_pin: 18
     dir_pin: 24
-    enable_pin: 25
+    enable_pin: 4
 
     # Homing
     home_switch_pin: 6
+    home_switch_enabled: false
     home_offset: 0.0
 
-  # Park position (face-down for wind/rain protection)
   park_azimuth: 0.0
-  park_elevation: 90.0     # Dish facing up = safest for offset dish
-
-  # Tracking
-  position_tolerance: 0.05  # degrees -- close enough to target
-  tracking_interval: 0.5    # seconds between position updates
+  park_elevation: 90.0
+  position_tolerance: 0.1
+  tracking_interval: 0.5
 
 sdr:
   device_index: 0
-  default_sample_rate: 2400000  # 2.4 MHz (RTL-SDR max stable)
-  default_gain: 40.0            # dB -- tune per band
-
-  # Band-specific SDR settings
-  bands:
-    vhf_meteor:
-      center_freq: 137100000   # 137.1 MHz Meteor-M LRPT
-      sample_rate: 300000
-      gain: 40.0
-      lna: null                # Direct to SDR
-
-    l_band_hrpt:
-      center_freq: 1700000000  # 1.7 GHz
-      sample_rate: 2400000
-      gain: 40.0
-      lna: "spf5189z"
-
-    hydrogen_21cm:
-      center_freq: 1420405752  # HI line rest frequency (Hz)
-      sample_rate: 2400000
-      gain: 30.0
-      lna: "spf5189z"
-      filter: "1420_saw"
-
-    ku_12ghz_maser:
-      center_freq: 1052000000  # IF after LNB downconversion
-      # LNB LO: 9.75 GHz (low band), so 12.178 GHz → 2.428 GHz IF
-      # Actually with Inverto PLL: LO = 9.75 GHz, 12.178 - 9.75 = 2.428 GHz
-      # But RTL-SDR max is ~1.766 GHz! Need high band LO (10.6 GHz):
-      # 12.178 - 10.6 = 1.578 GHz → within RTL-SDR range
-      # So we NEED the 22kHz tone to activate high-band LO
-      sample_rate: 2400000
-      gain: 30.0
-      lnb: "inverto_ku_pll"
-      lnb_voltage: 18          # Volts (horizontal polarization)
-      lnb_22khz: true          # High band LO (10.6 GHz)
-      lnb_lo_frequency: 10600000000  # 10.6 GHz high band LO
-
-    ku_6ghz_maser:
-      # 6.668 GHz methanol -- needs Ku LNB low band
-      center_freq: 918000000   # 6.668 - 5.75 = 918 MHz (C-band LNB needed)
-      # Actually Ku LNB doesn't cover 6.7 GHz! Would need C-band LNB.
-      # This band is a future upgrade.
-      sample_rate: 2400000
-      gain: 30.0
-      note: "Requires C-band LNB, not covered by Ku-band"
+  default_sample_rate: 2400000
+  default_gain: 40.0
 
 lnb:
   inverto_ku_pll:
     model: "Inverto IDLB-SINL40"
     type: "PLL"
-    lo_low: 9750000000       # 9.75 GHz
-    lo_high: 10600000000     # 10.6 GHz
-    switch_freq: 11700000000 # 11.7 GHz boundary
-    noise_figure: 0.3        # dB (typical)
-    # Band switching: 22kHz tone = high band
-    # Polarization: 13V = vertical, 18V = horizontal
+    lo_low: 9750000000
+    lo_high: 10600000000
+    switch_freq: 11700000000
 
-observation:
-  # FFT settings for spectral work
-  fft_size: 65536            # 64k points for fine frequency resolution
-  fft_overlap: 0.5           # 50% overlap
-  integration_time: 60       # seconds per spectral dump
-
-  # Maser-specific
-  maser_integration: 1800    # 30 minutes for maser observations
-  maser_fft_size: 131072     # 128k for ~18 Hz resolution at 2.4 MHz sample rate
-
-  # Calibration
-  cal_method: "on_off"       # ON-source / OFF-source subtraction
-  off_source_offset: 5.0     # degrees offset for OFF measurement
+  # GPIO pins for LNB control (relocated from HAT-conflicting pins)
+  gpio:
+    power_pin: 23
+    voltage_select_pin: 25
+    tone_pin: 26
