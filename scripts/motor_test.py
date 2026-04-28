@@ -47,7 +47,7 @@ FALLBACK_CONFIG = {
     },
 }
 
-STEP_PULSE_HIGH_S = 5e-6   # 5 µs
+STEP_PULSE_HIGH_S = 200e-6   # 5 µs
 DIR_SETTLE_S = 1e-6        # 1 µs
 
 
@@ -184,7 +184,7 @@ def _pulse(gpio: Gpio, motor: MotorCfg) -> None:
 
 
 def _trapezoid_delays(total_steps: int, target_sps: float,
-                      accel_sps2: float, min_sps: float = 50.0) -> list[float]:
+                      accel_sps2: float, min_sps: float = 1.0) -> list[float]:
     """Build a per-step delay schedule (seconds between pulses) with a trap profile."""
     target_sps = max(target_sps, min_sps + 1.0)
     # Steps needed to ramp from min_sps to target_sps at accel_sps2:
@@ -266,6 +266,10 @@ def cli(ctx: click.Context, config_path: Path, dry_run: bool, verbose: bool) -> 
         gpio.open_chip()
     # Claim all pins up-front; safe to repeat.
     for m in (az, el):
+                # MODE PINS (Waveshare HAT B): software-microstep config (DIPs all-1) — drive low for full step
+        for _mp in (16, 17, 20, 21, 22, 27):
+            try: gpio.claim_output(_mp, 0)
+            except Exception: pass
         for pin in (m.step_pin, m.dir_pin, m.enable_pin):
             gpio.claim_output(pin, 0)
     # Drivers idle (disabled) at startup

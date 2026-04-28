@@ -28,7 +28,7 @@ except ImportError:
 
 
 # Pulse / setup timings for typical step/dir drivers (TMC2209-class).
-_STEP_PULSE_S = 2e-6      # STEP high pulse width
+_STEP_PULSE_S = 200e-6      # STEP high pulse width
 _DIR_SETUP_S = 5e-6       # DIR-to-STEP setup time
 _MIN_STEP_INTERVAL_S = 1e-4  # 100 µs floor between rising edges
 
@@ -111,7 +111,12 @@ class StepperAxis:
             self.gpio = _SimGpio()
         self.gpio.claim_output(self.step_pin, 0)
         self.gpio.claim_output(self.dir_pin, 0)
-        self.gpio.claim_output(self.enable_pin, 1)  # active-low: 1 = disabled
+        self.gpio.claim_output(self.enable_pin, 1)
+        # MODE PINS (Waveshare HAT B): drive low for full step (works with DIPs all-1 software microstep)
+        for _mp in (16, 17, 20, 21, 22, 27):
+            try: self.gpio.claim_output(_mp, 0)
+            except Exception: pass
+        # original line continues below  # active-low: 1 = disabled
 
     # ---- conversions ----
 
