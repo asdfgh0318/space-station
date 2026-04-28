@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>space-station × inmarsat-sniffer — Merge Plan</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121821;
+    --panel-2: #1a2230;
+    --ink: #e6edf3;
+    --ink-dim: #9aa7b4;
+    --accent: #7cf2c8;
+    --accent-2: #ffb86b;
+    --accent-3: #c792ea;
+    --danger: #ff6b6b;
+    --line: #243042;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(ellipse at top, #14202e 0%, var(--bg) 60%) fixed;
+    color: var(--ink);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    font-size: 15px;
+    line-height: 1.55;
+    min-height: 100vh;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 48px 28px 96px; }
+
+  /* Hero */
+  .hero {
+    border: 1px solid var(--line);
+    border-radius: 14px;
+    background: linear-gradient(180deg, rgba(124,242,200,0.06), rgba(0,0,0,0));
+    padding: 36px 32px;
+    margin-bottom: 28px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    font-size: 11px;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .hero h1 {
+    margin: 0 0 12px;
+    font-size: 38px;
+    line-height: 1.15;
+    letter-spacing: -0.02em;
+  }
+  .hero h1 .x { color: var(--accent); margin: 0 8px; }
+  .hero p.lead {
+    margin: 0;
+    color: var(--ink-dim);
+    font-size: 17px;
+    max-width: 78ch;
+  }
+  .meta-row {
+    display: flex; flex-wrap: wrap; gap: 18px;
+    margin-top: 22px;
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+  }
+  .meta-row span b { color: var(--ink); font-weight: 500; }
+
+  /* Section */
+  section { margin-top: 40px; }
+  h2 {
+    font-size: 22px;
+    letter-spacing: -0.01em;
+    margin: 0 0 18px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  h2 .num {
+    display: inline-block;
+    width: 28px; height: 28px;
+    line-height: 28px;
+    text-align: center;
+    font-family: var(--mono);
+    font-size: 13px;
+    background: var(--accent);
+    color: #0b0f14;
+    border-radius: 6px;
+    margin-right: 10px;
+    vertical-align: 1px;
+  }
+  h3 { font-size: 16px; margin: 18px 0 8px; }
+  p { color: #cdd6df; }
+
+  /* Two-column repo overview */
+  .repos {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    gap: 0;
+    align-items: stretch;
+  }
+  .repo {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 22px;
+  }
+  .repo.left { border-color: rgba(124,242,200,0.35); }
+  .repo.right { border-color: rgba(199,146,234,0.35); }
+  .repo h3 { margin-top: 0; }
+  .repo .url {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    word-break: break-all;
+    margin-bottom: 14px;
+  }
+  .repo ul { margin: 0; padding-left: 18px; color: #cdd6df; font-size: 14px; }
+  .repo li { margin-bottom: 6px; }
+  .repo .tag {
+    display: inline-block;
+    background: rgba(124,242,200,0.1);
+    color: var(--accent);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    margin-right: 6px;
+    margin-bottom: 4px;
+  }
+  .repo.right .tag { background: rgba(199,146,234,0.12); color: var(--accent-3); }
+  .joiner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 64px;
+    font-family: var(--mono);
+    color: var(--accent-2);
+    font-size: 24px;
+  }
+  @media (max-width: 760px) {
+    .repos { grid-template-columns: 1fr; }
+    .joiner { width: 100%; height: 36px; }
+  }
+
+  /* Merge points */
+  .merges {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 14px;
+  }
+  .mp {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+    position: relative;
+  }
+  .mp .label {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-dim);
+    margin-bottom: 6px;
+  }
+  .mp h3 { margin: 2px 0 10px; font-size: 16px; }
+  .mp p { margin: 0; font-size: 13.5px; color: #cdd6df; }
+  .mp.lock { border-left: 3px solid var(--accent); }
+  .mp.delta { border-left: 3px solid var(--accent-2); }
+  .mp.risk { border-left: 3px solid var(--danger); }
+  .mp .arrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line);
+  }
+  .mp .arrow b { color: var(--accent); }
+  .mp.delta .arrow b { color: var(--accent-2); }
+  .mp.risk .arrow b { color: var(--danger); }
+
+  /* Architecture diagram */
+  .arch {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 20px;
+    font-family: var(--mono);
+    font-size: 12.5px;
+    line-height: 1.7;
+    overflow-x: auto;
+    color: #cdd6df;
+  }
+  .arch .box {
+    display: inline-block;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 4px 10px;
+    margin: 2px;
+    background: var(--panel-2);
+  }
+  .arch .new { color: var(--accent-3); border-color: rgba(199,146,234,0.4); }
+  .arch .existing { color: var(--accent); border-color: rgba(124,242,200,0.4); }
+  .arch .glue { color: var(--accent-2); border-color: rgba(255,184,107,0.4); border-style: dashed; }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 4px;
+    font-size: 13.5px;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    vertical-align: top;
+  }
+  th {
+    color: var(--ink-dim);
+    font-weight: 500;
+    font-family: var(--mono);
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+  }
+  td code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--panel-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+  .pill {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 999px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .pill.have { background: rgba(124,242,200,0.12); color: var(--accent); }
+  .pill.add  { background: rgba(199,146,234,0.14); color: var(--accent-3); }
+  .pill.swap { background: rgba(255,184,107,0.14); color: var(--accent-2); }
+  .pill.risk { background: rgba(255,107,107,0.14); color: var(--danger); }
+
+  /* Phase cards */
+  .phases { display: flex; flex-direction: column; gap: 14px; }
+  .phase {
+    display: grid;
+    grid-template-columns: 60px 1fr;
+    gap: 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 12px;
+    padding: 18px 20px;
+  }
+  .phase .ph-num {
+    font-family: var(--mono);
+    font-size: 28px;
+    color: var(--accent);
+    line-height: 1;
+    padding-top: 6px;
+  }
+  .phase h3 { margin: 0 0 6px; font-size: 17px; }
+  .phase .est {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    margin-bottom: 8px;
+  }
+  .phase ul { margin: 6px 0 0; padding-left: 18px; }
+  .phase li { color: #cdd6df; font-size: 14px; margin-bottom: 4px; }
+  .phase code {
+    font-family: var(--mono);
+    font-size: 12px;
+    background: var(--panel-2);
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: var(--accent);
+  }
+
+  /* Open questions */
+  .qs { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .qs { grid-template-columns: 1fr; } }
+  .q {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--accent-2);
+    border-radius: 8px;
+    padding: 14px 16px;
+  }
+  .q b { color: var(--accent-2); }
+
+  footer {
+    margin-top: 60px;
+    padding-top: 20px;
+    border-top: 1px solid var(--line);
+    color: var(--ink-dim);
+    font-size: 12px;
+    font-family: var(--mono);
+  }
+  footer a { color: var(--accent); text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="hero">
+    <div class="eyebrow">Integration plan · 2026-04-28</div>
+    <h1>space-station <span class="x">×</span> inmarsat-sniffer</h1>
+    <p class="lead">
+      Bolt a real L-band decoder onto the radio-telescope tracker. Aim the dish at a geostationary
+      Inmarsat satellite, run <code>inmarsat-sniffer</code> as a managed sidecar, surface its decode
+      stream in the existing FastAPI dashboard. No code merge — submodule + subprocess + JSON glue.
+    </p>
+    <div class="meta-row">
+      <span>repo: <b>asdfgh0318/space-station</b> (this)</span>
+      <span>upstream: <b>alphafox02/inmarsat-sniffer</b></span>
+      <span>license note: <b>GPL-3.0 sidecar</b></span>
+      <span>est. effort: <b>~12–18 h software, ~½ day hardware</b></span>
+    </div>
+  </div>
+
+  <section>
+    <h2><span class="num">1</span>What you have, what you're pulling in</h2>
+    <div class="repos">
+      <div class="repo left">
+        <span class="tag">tracker</span><span class="tag">FastAPI</span><span class="tag">RPi 4</span><span class="tag">Python</span>
+        <h3>space-station</h3>
+        <div class="url">github.com/asdfgh0318/space-station</div>
+        <ul>
+          <li><b>tracker/</b> — alt-az motor control (TMC2209 × 2, NEMA 17, GT2 5:1 belt). <code>controller.py</code> 565 LOC, click CLI, lgpio backend.</li>
+          <li><b>web/app.py</b> — FastAPI + WebSocket dashboard (port 8080, retro-terminal UI). Jog pad, goto, limit wizard, debug page.</li>
+          <li><b>scripts/bootstrap_rpi.sh</b> — Debian Trixie bring-up; already installs <code>librtlsdr-dev rtl-sdr</code> + udev rules.</li>
+          <li><b>config.yaml</b> — site (Warsaw 52.23°N, 21.01°E), motor pins, dormant Ku-band LNB block.</li>
+          <li><span class="pill have">have</span> motion + UI</li>
+          <li><span class="pill risk">missing</span> any SDR/demod pipeline</li>
+        </ul>
+      </div>
+      <div class="joiner">⇆</div>
+      <div class="repo right">
+        <span class="tag">decoder</span><span class="tag">C/C++</span><span class="tag">CMake</span><span class="tag">SDR</span>
+        <h3>inmarsat-sniffer</h3>
+        <div class="url">github.com/alphafox02/inmarsat-sniffer</div>
+        <ul>
+          <li><b>Standalone L-band decoder</b> (1525–1559 MHz). STD-C EGC + Aero ACARS / ADS-C / CPDLC simultaneously, single SDR.</li>
+          <li>Up to <b>27-channel parallel demod</b>, AVX2/SSE/NEON SIMD, <code>--skip-c-channel</code> for Pi.</li>
+          <li>SDR backends: RTL-SDR, HackRF, BladeRF, USRP, Airspy, SDRplay, SoapySDR, VITA-49.</li>
+          <li>Outputs: <b>JSON UDP feed</b>, SBS/BaseStation, <b>MQTT</b>, JAERO format-3, ZMQ audio.</li>
+          <li>Built-in <b>Leaflet map dashboard</b> on port 8888 (<code>--web</code>), optional spectrum tab.</li>
+          <li><span class="pill add">add</span> licensed <b>GPL-3.0</b> — keep as separate binary, do not statically link / vendor source.</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">2</span>Merge points — where they snap together</h2>
+    <div class="merges">
+
+      <div class="mp lock">
+        <div class="label">Lock-in · roadmap fit</div>
+        <h3>L-band slots into Phase 3</h3>
+        <p>Project plan already lists <b>Phase 3 = L-band (HRPT 1.7 GHz + Hydrogen 21 cm)</b>. Inmarsat at 1.5 GHz shares the same RF family — same LNA class, same feed lineage. Adding Inmarsat is a low-risk dry-run for that phase.</p>
+        <div class="arrow"><b>tracker roadmap</b> → adopts Inmarsat as Phase 3.0 first-light target</div>
+      </div>
+
+      <div class="mp lock">
+        <div class="label">Lock-in · pointing</div>
+        <h3>Geostationary = trivial pointing</h3>
+        <p>From Warsaw (52.23°N, 21.01°E), <b>Alphasat at 25°E</b> sits at fixed AZ ≈ 165°, EL ≈ 27°. The tracker's <code>goto az el</code> already does this — no orbit prediction, no TLE, no scheduling. Just one preset.</p>
+        <div class="arrow"><b>controller.py</b> → add target preset · <b>web/app.py</b> → "Park on Alphasat" button</div>
+      </div>
+
+      <div class="mp lock">
+        <div class="label">Lock-in · OS prep</div>
+        <h3>Bootstrap already half-ready</h3>
+        <p><code>scripts/bootstrap_rpi.sh</code> already installs <code>librtlsdr-dev</code>, <code>rtl-sdr</code> tools, and writes the RTL-SDR udev rules / blacklists DVB driver. Need to add: <code>cmake</code>, <code>build-essential</code>, <code>libacars2-dev</code>, <code>libzmq3-dev</code>, <code>libmosquitto-dev</code>.</p>
+        <div class="arrow"><b>bootstrap_rpi.sh</b> → +5 packages and a <code>cmake&nbsp;..&nbsp;&amp;&amp;&nbsp;make</code> step</div>
+      </div>
+
+      <div class="mp lock">
+        <div class="label">Lock-in · data plane</div>
+        <h3>Sniffer speaks JSON, FastAPI listens</h3>
+        <p>inmarsat-sniffer emits a JSON UDP feed (<code>--feed&nbsp;udp://127.0.0.1:5000</code>) and supports MQTT. FastAPI app already runs a WebSocket loop — add a UDP/MQTT listener task that re-broadcasts decode events to the dashboard.</p>
+        <div class="arrow"><b>web/app.py</b> → new <code>/ws/decode</code> channel · <b>tracker/</b> → no change</div>
+      </div>
+
+      <div class="mp delta">
+        <div class="label">Delta · hardware</div>
+        <h3>Antenna feed mismatch</h3>
+        <p>Existing config targets a <b>Ku-band LNB (10 GHz)</b>. Inmarsat L-band needs a different feed: modified GPS patch, helix, or L-band patch + LNA. The 60 cm dish is overkill for L-band — a small patch on a tripod will work for first light.</p>
+        <div class="arrow"><b>hardware</b> → swap feed · <b>config.yaml</b> → add band profiles (l_band / ku_band)</div>
+      </div>
+
+      <div class="mp delta">
+        <div class="label">Delta · UI</div>
+        <h3>Two web servers, one dashboard</h3>
+        <p>Sniffer's own UI is on :8888, FastAPI is on :8080. Cleanest: keep both running, embed sniffer's map as an iframe panel inside FastAPI. Alternative: drop <code>--web</code> and re-render decode events natively. Iframe wins on effort.</p>
+        <div class="arrow"><b>web/app.py</b> → add <code>&lt;iframe src=":8888"&gt;</code> tab in the dashboard</div>
+      </div>
+
+      <div class="mp delta">
+        <div class="label">Delta · process model</div>
+        <h3>Sidecar, not library</h3>
+        <p>Don't vendor C source into this repo. Add as <b>git submodule</b> at <code>vendor/inmarsat-sniffer/</code>, build with CMake, run as a managed subprocess (or systemd unit). Keeps GPL-3.0 isolated and updates clean via <code>git submodule update --remote</code>.</p>
+        <div class="arrow">new file <b>tracker/sniffer.py</b> → spawn / supervise / restart</div>
+      </div>
+
+      <div class="mp risk">
+        <div class="label">Risk · CPU</div>
+        <h3>Pi 4 will breathe hard</h3>
+        <p>27-channel parallel demod is heavy. The README explicitly recommends <code>--skip-c-channel</code> for Pi-class hosts (~27% CPU saved). Default to skip-c-channel; expose a toggle in the dashboard for HackRF/full-bandwidth experiments later.</p>
+        <div class="arrow"><b>config.yaml</b> → <code>sniffer.skip_c_channel: true</code> default</div>
+      </div>
+
+      <div class="mp risk">
+        <div class="label">Risk · license</div>
+        <h3>GPL-3.0 contagion (avoidable)</h3>
+        <p>inmarsat-sniffer is GPL-3.0-or-later. As a separate binary invoked via subprocess + IPC (UDP/MQTT), the FastAPI app stays under whatever license you choose. Do <b>not</b> import its C code, link against its objects, or re-publish modified source bundled inside this repo.</p>
+        <div class="arrow"><b>vendor/</b> via submodule (link, not copy) · root LICENSE unaffected</div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">3</span>Target architecture</h2>
+    <div class="arch">
+<pre style="margin:0; font: inherit; color: inherit;">
+                            ┌──────────────────────────────┐
+   RF chain (NEW):          │  L-band patch / helix feed   │
+                            │  + LNA (bias-tee from SDR)   │
+                            │  + RTL-SDR Blog v3/v4 (USB)  │
+                            └─────────────┬────────────────┘
+                                          │ IQ
+                                          ▼
+   <span class="box new">vendor/inmarsat-sniffer/  (git submodule, GPL-3.0, C binary)</span>
+                                          │
+                ┌─────────────────────────┼─────────────────────────┐
+                │ JSON UDP :5000          │ MQTT (optional)         │ HTTP :8888
+                ▼                         ▼                         ▼
+   <span class="box glue">tracker/sniffer.py</span>          <span class="box glue">mosquitto (optional)</span>      <span class="box new">sniffer's own web UI</span>
+   spawn · supervise · parse                                        (Leaflet map)
+                │                                                          │
+                ▼                                                          │ iframe
+   <span class="box existing">web/app.py  (FastAPI + WS, port 8080)</span>  ◀──────────────────────────┘
+                │
+                ├─ /api/sniffer/start | /stop | /status
+                ├─ /ws/decode  (live ACARS / ADS-C / EGC stream)
+                └─ /  retro-terminal dashboard  ── new tab: "Inmarsat"
+                                                  ├─ live message list
+                                                  ├─ aircraft / ship table
+                                                  └─ embedded sniffer map
+                │
+                ▼
+   <span class="box existing">tracker/controller.py  (lgpio, NEMA 17 × 2, GT2 belt 5:1)</span>
+                │
+                ▼ <span class="box glue">"Park on Alphasat 25°E" → goto 165°, 27°</span>
+                ▼
+   Antenna mount  (3D-printed alt-az, Phase 2 build)
+</pre>
+    </div>
+    <p style="margin-top: 14px; color: var(--ink-dim); font-size: 13px;">
+      <span class="pill have">existing</span> already in repo
+      &nbsp;&nbsp;<span class="pill add">new</span> pulled from upstream
+      &nbsp;&nbsp;<span class="pill swap">glue</span> thin Python shim added in this repo
+    </p>
+  </section>
+
+  <section>
+    <h2><span class="num">4</span>Concrete change list</h2>
+    <table>
+      <thead>
+        <tr><th>Where</th><th>What</th><th>Status</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><code>vendor/inmarsat-sniffer/</code></td>
+          <td>Add as git submodule pinned to a known-good commit on <code>main</code>.</td>
+          <td><span class="pill add">new</span></td>
+        </tr>
+        <tr>
+          <td><code>scripts/bootstrap_rpi.sh</code></td>
+          <td>Append <code>cmake build-essential libacars2-dev libzmq3-dev libmosquitto-dev</code>; build sniffer in <code>vendor/.../build/</code>.</td>
+          <td><span class="pill swap">extend</span></td>
+        </tr>
+        <tr>
+          <td><code>tracker/config.yaml</code></td>
+          <td>Add <code>bands.l_band</code> profile (1.5 GHz, RTL-SDR, no LO); add <code>sniffer:</code> block (binary path, --skip-c-channel, sat preset).</td>
+          <td><span class="pill swap">extend</span></td>
+        </tr>
+        <tr>
+          <td><code>tracker/sniffer.py</code></td>
+          <td>New module: spawn the C binary as subprocess, parse JSON UDP, expose async iterator. Restart on crash.</td>
+          <td><span class="pill add">new</span></td>
+        </tr>
+        <tr>
+          <td><code>tracker/targets.py</code></td>
+          <td>New module: hardcoded geostationary preset table (Alphasat 25°E etc.) → AZ/EL from site coords. Pure math, no TLE.</td>
+          <td><span class="pill add">new</span></td>
+        </tr>
+        <tr>
+          <td><code>web/app.py</code></td>
+          <td>Add: <code>/api/sniffer/{start,stop,status}</code>, <code>/ws/decode</code>, "Inmarsat" tab with live message list + iframe of :8888.</td>
+          <td><span class="pill swap">extend</span></td>
+        </tr>
+        <tr>
+          <td><code>requirements.txt</code></td>
+          <td>No new Python deps strictly required (UDP via stdlib). Optional: <code>paho-mqtt</code> if you want MQTT instead of UDP.</td>
+          <td><span class="pill have">stable</span></td>
+        </tr>
+        <tr>
+          <td>systemd unit (optional)</td>
+          <td><code>scripts/inmarsat-sniffer.service</code> for headless / auto-start; alternative to subprocess supervision.</td>
+          <td><span class="pill add">optional</span></td>
+        </tr>
+        <tr>
+          <td>Hardware</td>
+          <td>L-band feed (modified GPS patch, helix, or L-band patch) + LNA (bias-tee). Tripod-mountable for bench bring-up before dish integration.</td>
+          <td><span class="pill risk">buy</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2><span class="num">5</span>Phased rollout</h2>
+    <div class="phases">
+
+      <div class="phase">
+        <div class="ph-num">A</div>
+        <div>
+          <h3>Bench decode — no antenna pointing yet</h3>
+          <div class="est">est. 3–4 h · pure software · success = a single ACARS message decoded</div>
+          <ul>
+            <li>Add submodule, extend bootstrap, build the C binary on the Pi.</li>
+            <li>Plug RTL-SDR + temporary L-band patch on a windowsill toward Alphasat.</li>
+            <li>Run binary directly with <code>--web</code> — confirm decodes in its own UI on :8888.</li>
+            <li>Exit criteria: at least one ACARS msg with valid CRC in the sniffer log.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="ph-num">B</div>
+        <div>
+          <h3>Sidecar wiring</h3>
+          <div class="est">est. 4–6 h · Python glue + UI</div>
+          <ul>
+            <li>Write <code>tracker/sniffer.py</code> — subprocess + async UDP listener.</li>
+            <li>Add <code>/api/sniffer/start|stop|status</code> + <code>/ws/decode</code>.</li>
+            <li>Add "Inmarsat" tab to dashboard: live message list + embedded :8888 iframe.</li>
+            <li>Exit criteria: clicking "Start sniffer" in the FastAPI UI streams live decodes into the page.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="ph-num">C</div>
+        <div>
+          <h3>Pointing integration</h3>
+          <div class="est">est. 2–3 h · once Phase 2 mechanical build is moving</div>
+          <ul>
+            <li>Add <code>tracker/targets.py</code> with Alphasat preset.</li>
+            <li>"Park on Alphasat" button → <code>goto 165, 27</code>.</li>
+            <li>Optional: SNR feedback loop — small AZ/EL nudges to maximise channel-lock count from sniffer's status JSON.</li>
+            <li>Exit criteria: dashboard "Park on Alphasat" reliably acquires lock without manual jog.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="phase">
+        <div class="ph-num">D</div>
+        <div>
+          <h3>Polish &amp; persistence</h3>
+          <div class="est">est. 3–5 h · optional but nice</div>
+          <ul>
+            <li>systemd unit for sniffer; auto-restart on Pi reboot.</li>
+            <li>SQLite log of decoded messages (rolling, 7-day window).</li>
+            <li>WOK residency hook: pipe decode rate into the neon-light visualiser (mentioned in <code>aplikacja_wok_rezydencja.md</code>).</li>
+            <li>README section: "Inmarsat first light".</li>
+          </ul>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2><span class="num">6</span>Decisions to lock before we start</h2>
+    <div class="qs">
+      <div class="q"><b>Q1.</b> Submodule vs. fork? Submodule keeps upstream updates clean, but a fork lets you pin patches. Default: <b>submodule</b> on <code>main</code> until you need to patch.</div>
+      <div class="q"><b>Q2.</b> Subprocess vs. systemd unit? Subprocess gives you start/stop from the dashboard; systemd is more robust for unattended ops. Default: <b>subprocess first, systemd in Phase D</b>.</div>
+      <div class="q"><b>Q3.</b> UDP JSON or MQTT for IPC? UDP is zero-config and stdlib-only. MQTT scales but adds mosquitto. Default: <b>UDP JSON</b>.</div>
+      <div class="q"><b>Q4.</b> Embed sniffer's web UI or rebuild natively? Iframe = same-day feature. Native = months of UI work. Default: <b>iframe</b>.</div>
+      <div class="q"><b>Q5.</b> Which feed do you actually have / want to buy? GPS patch (cheapest, known-marginal), helix (best, hardest to print), L-band patch + LNA (middle ground). Need to confirm before Phase A bench test.</div>
+      <div class="q"><b>Q6.</b> Project license? Currently no LICENSE file at root. Pick one — MIT or Apache-2.0 are both compatible with calling a GPL-3.0 sidecar via IPC. Need this nailed down before adding the submodule.</div>
+    </div>
+  </section>
+
+  <footer>
+    Generated 2026-04-28 · sources: live audit of <code>space-station/</code> + <code>github.com/alphafox02/inmarsat-sniffer</code> README and tree · iterate freely.
+  </footer>
+
+</div>
+</body>
+</html>

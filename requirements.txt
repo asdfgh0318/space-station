@@ -1,7 +1,5 @@
 # Motor control
 lgpio
-# pigpio          # optional — may not install on Debian Trixie
-# RPi.GPIO        # optional — imports but can't control pins on Trixie
 
 # Web UI
 fastapi

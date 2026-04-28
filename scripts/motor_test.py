@@ -1,650 +1,427 @@
 #!/usr/bin/env python3
-"""
-motor_test.py — Bench test CLI for Waveshare Stepper Motor HAT (B)
-Two NEMA 17 motors: Motor 1 = Azimuth, Motor 2 = Elevation
+"""Bench-test CLI for the two NEMA 17 steppers on the Waveshare Stepper Motor HAT (B).
 
-Usage:
-    python scripts/motor_test.py --help
-    python scripts/motor_test.py --dry-run test-all
-    python scripts/motor_test.py spin --motor 1 --steps 200 --speed 100 --dir cw
-    python scripts/motor_test.py sweep --motor 1 --min-speed 50 --max-speed 500
-    python scripts/motor_test.py interactive
+Standalone: does NOT import tracker.controller. Reads tracker/config.yaml when
+present, otherwise falls back to the hardcoded pin map below.
 """
+from __future__ import annotations
 
-import os
 import sys
 import time
-import signal
-import curses
-import pathlib
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Optional
 
 import click
 import yaml
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
-from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeElapsedColumn
-from rich.panel import Panel
-from rich import box
-
-# ---------------------------------------------------------------------------
-# GPIO bootstrap — graceful fallback when not on RPi
-# ---------------------------------------------------------------------------
-
-DRY_RUN = False  # overridden by --dry-run flag before any command runs
-
-HAS_LGPIO = False
-HAS_GPIO = False
-_chip = None
 
 try:
-    import lgpio
-    HAS_LGPIO = True
-except ImportError:
-    try:
-        import RPi.GPIO as GPIO
-        HAS_GPIO = True
-    except ImportError:
-        pass
+    import lgpio  # type: ignore
+    _HAS_LGPIO = True
+except Exception:  # pragma: no cover — dev box without lgpio
+    lgpio = None  # type: ignore
+    _HAS_LGPIO = False
 
 console = Console()
 
-# ---------------------------------------------------------------------------
-# Default pin assignments (fallback if config not found)
-# ---------------------------------------------------------------------------
-
-DEFAULTS = {
-    1: {"step": 19, "dir": 13, "enable": 12, "name": "Azimuth"},
-    2: {"step": 18, "dir": 24, "enable": 4,  "name": "Elevation"},
+# Hardcoded fallback pin map (motor 1 = AZ, motor 2 = EL).
+FALLBACK_CONFIG = {
+    "azimuth": {
+        "step_pin": 19, "dir_pin": 13, "enable_pin": 12,
+        "steps_per_rev": 200, "microstepping": 32, "gear_ratio": 1,
+        "max_speed": 15.0, "acceleration": 8.0,
+    },
+    "elevation": {
+        "step_pin": 18, "dir_pin": 24, "enable_pin": 4,
+        "steps_per_rev": 200, "microstepping": 32, "gear_ratio": 1,
+        "max_speed": 12.0, "acceleration": 6.0,
+    },
 }
 
-# ---------------------------------------------------------------------------
-# Config loading
-# ---------------------------------------------------------------------------
+STEP_PULSE_HIGH_S = 5e-6   # 5 µs
+DIR_SETTLE_S = 1e-6        # 1 µs
 
-def load_config() -> dict:
-    """Load tracker/config.yaml relative to this script's project root."""
-    script_dir = pathlib.Path(__file__).resolve().parent
-    config_path = script_dir.parent / "tracker" / "config.yaml"
-    if not config_path.exists():
-        console.print(
-            f"[yellow]Config not found at {config_path} — using hardcoded pin defaults[/yellow]"
+
+@dataclass
+class MotorCfg:
+    name: str
+    step_pin: int
+    dir_pin: int
+    enable_pin: int
+    steps_per_rev: int
+    microstepping: int
+    gear_ratio: float
+    max_speed: float       # config units (deg/s in YAML); used as steps/s default for sweep
+    acceleration: float
+
+    @property
+    def steps_per_deg(self) -> float:
+        return (self.steps_per_rev * self.microstepping * self.gear_ratio) / 360.0
+
+    @property
+    def max_speed_steps(self) -> float:
+        """Convert config max_speed (deg/s) to steps/s for the sweep ramp."""
+        return self.max_speed * self.steps_per_deg
+
+
+def load_config(path: Path) -> tuple[MotorCfg, MotorCfg]:
+    """Load motor configs from YAML, falling back to defaults on FileNotFoundError."""
+    raw: dict
+    try:
+        with path.open("r") as f:
+            data = yaml.safe_load(f) or {}
+        raw = (data.get("tracker") or {})
+        az = raw.get("azimuth") or FALLBACK_CONFIG["azimuth"]
+        el = raw.get("elevation") or FALLBACK_CONFIG["elevation"]
+    except FileNotFoundError:
+        az = FALLBACK_CONFIG["azimuth"]
+        el = FALLBACK_CONFIG["elevation"]
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to parse {path}: {e}; using fallback")
+        az = FALLBACK_CONFIG["azimuth"]
+        el = FALLBACK_CONFIG["elevation"]
+
+    def build(name: str, d: dict) -> MotorCfg:
+        return MotorCfg(
+            name=name,
+            step_pin=int(d["step_pin"]),
+            dir_pin=int(d["dir_pin"]),
+            enable_pin=int(d["enable_pin"]),
+            steps_per_rev=int(d.get("steps_per_rev", 200)),
+            microstepping=int(d.get("microstepping", 32)),
+            gear_ratio=float(d.get("gear_ratio", 1)),
+            max_speed=float(d.get("max_speed", 10.0)),
+            acceleration=float(d.get("acceleration", 5.0)),
         )
-        return {}
-    try:
-        with open(config_path) as f:
-            return yaml.safe_load(f) or {}
-    except Exception as exc:
-        console.print(f"[yellow]Failed to parse config: {exc} — using defaults[/yellow]")
-        return {}
 
+    return build("azimuth", az), build("elevation", el)
 
-def build_motor_map(cfg: dict) -> dict:
-    """
-    Return motor_map[motor_id] = {step, dir, enable, name}
-    Uses config values when available, falls back to DEFAULTS.
-    """
-    motors = dict(DEFAULTS)  # start from defaults
-
-    tracker = cfg.get("tracker", {})
-    az = tracker.get("azimuth", {})
-    el = tracker.get("elevation", {})
-
-    if az.get("step_pin"):
-        motors[1] = {
-            "step":   az["step_pin"],
-            "dir":    az["dir_pin"],
-            "enable": az["enable_pin"],
-            "name":   "Azimuth",
-        }
-    if el.get("step_pin"):
-        motors[2] = {
-            "step":   el["step_pin"],
-            "dir":    el["dir_pin"],
-            "enable": el["enable_pin"],
-            "name":   "Elevation",
-        }
-
-    return motors
 
 # ---------------------------------------------------------------------------
-# GPIO helpers
+# GPIO layer
 # ---------------------------------------------------------------------------
+class Gpio:
+    """Tiny wrapper around lgpio with a dry-run/sim backend."""
 
-def _hw_available():
-    return not DRY_RUN and (HAS_LGPIO or HAS_GPIO)
+    def __init__(self, sim: bool = False, verbose: bool = False):
+        self.sim = sim or not _HAS_LGPIO
+        self.verbose = verbose
+        self.handle: Optional[int] = None
+        self._claimed: set[int] = set()
+        self.write_count: int = 0
+
+    def open_chip(self) -> None:
+        if self.sim:
+            if self.verbose:
+                console.print("[dim]sim: open_chip(0)[/dim]")
+            return
+        self.handle = lgpio.gpiochip_open(0)
+
+    def claim_output(self, pin: int, initial: int = 0) -> None:
+        if pin in self._claimed:
+            return
+        if self.sim:
+            if self.verbose:
+                console.print(f"[dim]sim: claim_output(BCM {pin})[/dim]")
+        else:
+            lgpio.gpio_claim_output(self.handle, pin, initial)
+        self._claimed.add(pin)
+
+    def write(self, pin: int, value: int) -> None:
+        self.write_count += 1
+        if self.sim:
+            if self.verbose:
+                console.print(f"[dim]sim: write(BCM {pin}, {value})[/dim]")
+            return
+        lgpio.gpio_write(self.handle, pin, value)
+
+    def cleanup(self) -> None:
+        if self.sim:
+            if self.verbose:
+                console.print(f"[dim]sim: cleanup ({self.write_count} writes)[/dim]")
+            return
+        if self.handle is not None:
+            for pin in self._claimed:
+                try:
+                    lgpio.gpio_free(self.handle, pin)
+                except Exception:
+                    pass
+            try:
+                lgpio.gpiochip_close(self.handle)
+            except Exception:
+                pass
+        self.handle = None
+        self._claimed.clear()
 
 
-def setup_gpio(motors: dict):
-    global _chip
-    if not _hw_available():
-        return
-    if HAS_LGPIO:
-        _chip = lgpio.gpiochip_open(0)
-        for m in motors.values():
-            lgpio.gpio_claim_output(_chip, m["step"], 0)
-            lgpio.gpio_claim_output(_chip, m["dir"], 0)
-            lgpio.gpio_claim_output(_chip, m["enable"], 1)  # HIGH = disabled
+# ---------------------------------------------------------------------------
+# Stepping primitives
+# ---------------------------------------------------------------------------
+def _set_dir(gpio: Gpio, motor: MotorCfg, direction: str) -> None:
+    val = 1 if direction == "cw" else 0
+    gpio.write(motor.dir_pin, val)
+    time.sleep(DIR_SETTLE_S)
+
+
+def _enable(gpio: Gpio, motor: MotorCfg, on: bool) -> None:
+    # Most stepper drivers (TMC2209/A4988) have ENABLE active-low.
+    gpio.write(motor.enable_pin, 0 if on else 1)
+
+
+def _pulse(gpio: Gpio, motor: MotorCfg) -> None:
+    gpio.write(motor.step_pin, 1)
+    time.sleep(STEP_PULSE_HIGH_S)
+    gpio.write(motor.step_pin, 0)
+
+
+def _trapezoid_delays(total_steps: int, target_sps: float,
+                      accel_sps2: float, min_sps: float = 50.0) -> list[float]:
+    """Build a per-step delay schedule (seconds between pulses) with a trap profile."""
+    target_sps = max(target_sps, min_sps + 1.0)
+    # Steps needed to ramp from min_sps to target_sps at accel_sps2:
+    # dv = a*t  →  t_ramp = (target - min) / a
+    # steps_ramp ≈ avg_speed * t_ramp = ((target+min)/2) * t_ramp
+    t_ramp = (target_sps - min_sps) / max(accel_sps2, 1.0)
+    steps_ramp = int(((target_sps + min_sps) / 2.0) * t_ramp)
+    steps_ramp = max(1, min(steps_ramp, total_steps // 2))
+    cruise = max(0, total_steps - 2 * steps_ramp)
+
+    delays: list[float] = []
+    for i in range(steps_ramp):
+        f = (i + 1) / steps_ramp
+        sps = min_sps + (target_sps - min_sps) * f
+        delays.append(1.0 / sps)
+    for _ in range(cruise):
+        delays.append(1.0 / target_sps)
+    for i in range(steps_ramp):
+        f = 1.0 - (i + 1) / steps_ramp
+        sps = min_sps + (target_sps - min_sps) * f
+        delays.append(1.0 / sps)
+    # Pad/trim to exact length
+    while len(delays) < total_steps:
+        delays.append(1.0 / target_sps)
+    return delays[:total_steps]
+
+
+def _step_with_progress(gpio: Gpio, motor: MotorCfg, steps: int,
+                        delays: list[float], label: str,
+                        show_progress: bool = True) -> None:
+    if show_progress:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            TextColumn("{task.completed}/{task.total} steps"),
+            TimeElapsedColumn(),
+            console=console,
+            transient=False,
+        ) as prog:
+            task = prog.add_task(label, total=steps)
+            t = time.perf_counter()
+            for i in range(steps):
+                _pulse(gpio, motor)
+                t += max(delays[i], STEP_PULSE_HIGH_S * 2)
+                slack = t - time.perf_counter()
+                if slack > 0:
+                    time.sleep(slack)
+                if (i & 0x1F) == 0 or i == steps - 1:
+                    prog.update(task, completed=i + 1)
     else:
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setwarnings(False)
-        for m in motors.values():
-            GPIO.setup(m["step"],   GPIO.OUT, initial=GPIO.LOW)
-            GPIO.setup(m["dir"],    GPIO.OUT, initial=GPIO.LOW)
-            GPIO.setup(m["enable"], GPIO.OUT, initial=GPIO.HIGH)
+        t = time.perf_counter()
+        for i in range(steps):
+            _pulse(gpio, motor)
+            t += max(delays[i], STEP_PULSE_HIGH_S * 2)
+            slack = t - time.perf_counter()
+            if slack > 0:
+                time.sleep(slack)
 
-
-def cleanup_gpio():
-    global _chip
-    if not _hw_available():
-        return
-    try:
-        if HAS_LGPIO and _chip is not None:
-            lgpio.gpiochip_close(_chip)
-            _chip = None
-        elif HAS_GPIO:
-            GPIO.cleanup()
-    except Exception:
-        pass
-
-
-def enable_motor(motor: dict, enabled: bool = True):
-    if not _hw_available():
-        return
-    val = 0 if enabled else 1  # Active LOW
-    if HAS_LGPIO:
-        lgpio.gpio_write(_chip, motor["enable"], val)
-    else:
-        GPIO.output(motor["enable"], GPIO.LOW if enabled else GPIO.HIGH)
-
-
-def set_direction(motor: dict, clockwise: bool):
-    if not _hw_available():
-        return
-    val = 1 if clockwise else 0
-    if HAS_LGPIO:
-        lgpio.gpio_write(_chip, motor["dir"], val)
-    else:
-        GPIO.output(motor["dir"], GPIO.HIGH if clockwise else GPIO.LOW)
-
-
-def pulse_step(step_pin: int, delay: float):
-    """Send one step pulse then wait for the inter-step delay."""
-    if not _hw_available():
-        time.sleep(delay)
-        return
-    if HAS_LGPIO:
-        lgpio.gpio_write(_chip, step_pin, 1)
-        time.sleep(0.000002)
-        lgpio.gpio_write(_chip, step_pin, 0)
-        time.sleep(delay)
-    else:
-        GPIO.output(step_pin, GPIO.HIGH)
-        time.sleep(0.000002)
-        GPIO.output(step_pin, GPIO.LOW)
-        time.sleep(delay)
 
 # ---------------------------------------------------------------------------
-# Shared helpers
+# CLI
 # ---------------------------------------------------------------------------
-
-def print_pin_table(motors: dict):
-    """Print a Rich table of pin assignments."""
-    table = Table(
-        title="GPIO Pin Assignments (BCM)",
-        box=box.ROUNDED,
-        show_header=True,
-        header_style="bold cyan",
-    )
-    table.add_column("Motor", style="bold")
-    table.add_column("Axis",  style="cyan")
-    table.add_column("STEP",  justify="right")
-    table.add_column("DIR",   justify="right")
-    table.add_column("ENABLE",justify="right")
-
-    for mid, m in motors.items():
-        table.add_row(
-            str(mid),
-            m["name"],
-            str(m["step"]),
-            str(m["dir"]),
-            str(m["enable"]),
-        )
-    console.print(table)
-
-
-def resolve_motor(motor_id: int, motors: dict) -> dict:
-    if motor_id not in motors:
-        console.print(f"[red]Unknown motor ID {motor_id}. Valid: {list(motors.keys())}[/red]")
-        sys.exit(1)
-    return motors[motor_id]
-
-
-def do_spin(motor: dict, steps: int, speed: float, clockwise: bool,
-            progress=None, task_id=None) -> int:
-    """
-    Spin motor for `steps` pulses at `speed` steps/sec.
-    Returns number of steps actually executed.
-    """
-    delay = 1.0 / speed
-    enable_motor(motor, True)
-    set_direction(motor, clockwise)
-
-    executed = 0
-    try:
-        for _ in range(steps):
-            pulse_step(motor["step"], delay)
-            executed += 1
-            if progress is not None and task_id is not None:
-                progress.update(task_id, advance=1)
-    finally:
-        enable_motor(motor, False)
-
-    return executed
-
-# ---------------------------------------------------------------------------
-# Click group with --dry-run global option
-# ---------------------------------------------------------------------------
-
 @click.group()
-@click.option("--dry-run", is_flag=True, default=False,
-              help="Print actions without touching GPIO.")
+@click.option("--config", "config_path", type=click.Path(path_type=Path),
+              default=Path("tracker/config.yaml"), show_default=True)
+@click.option("--dry-run", is_flag=True, help="Don't touch GPIO, just log intent.")
+@click.option("--verbose", "-v", is_flag=True)
 @click.pass_context
-def cli(ctx, dry_run):
-    """Bench test CLI for Waveshare Stepper Motor HAT (B)."""
-    global DRY_RUN
-    DRY_RUN = dry_run
-    ctx.ensure_object(dict)
+def cli(ctx: click.Context, config_path: Path, dry_run: bool, verbose: bool) -> None:
+    """Bench-test CLI for the two NEMA 17 steppers."""
+    az, el = load_config(config_path)
+    gpio = Gpio(sim=dry_run, verbose=verbose)
+    try:
+        gpio.open_chip()
+    except Exception as e:
+        console.print(f"[red]✗[/red] gpiochip open failed: {e}; switching to sim")
+        gpio = Gpio(sim=True, verbose=verbose)
+        gpio.open_chip()
+    # Claim all pins up-front; safe to repeat.
+    for m in (az, el):
+        for pin in (m.step_pin, m.dir_pin, m.enable_pin):
+            gpio.claim_output(pin, 0)
+    # Drivers idle (disabled) at startup
+    _enable(gpio, az, False)
+    _enable(gpio, el, False)
+    ctx.obj = {"az": az, "el": el, "gpio": gpio, "dry_run": dry_run, "verbose": verbose}
+    ctx.call_on_close(gpio.cleanup)
 
-    cfg = load_config()
-    ctx.obj["motors"] = build_motor_map(cfg)
 
-    if DRY_RUN:
-        console.print(Panel("[yellow]DRY-RUN mode — no GPIO will be touched[/yellow]",
-                            expand=False))
-    elif not HAS_GPIO and not HAS_LGPIO:
-        console.print(Panel(
-            "[yellow]No GPIO library available — running in implicit dry-run mode[/yellow]",
-            expand=False,
-        ))
+def _pick_motor(ctx: click.Context, motor_idx: int) -> MotorCfg:
+    return ctx.obj["az"] if motor_idx == 1 else ctx.obj["el"]
 
-# ---------------------------------------------------------------------------
-# spin command
-# ---------------------------------------------------------------------------
 
 @cli.command()
-@click.option("--motor",  "-m", type=int, default=1, show_default=True,
-              help="Motor number (1=AZ, 2=EL).")
-@click.option("--steps",  "-n", type=int, default=200, show_default=True,
-              help="Number of steps to run.")
-@click.option("--speed",  "-s", type=float, default=100.0, show_default=True,
-              help="Speed in steps/sec.")
-@click.option("--dir",    "-d", "direction",
-              type=click.Choice(["cw", "ccw"], case_sensitive=False),
-              default="cw", show_default=True,
-              help="Rotation direction.")
+@click.option("--motor", type=click.IntRange(1, 2), required=True)
+@click.option("--steps", type=int, required=True)
+@click.option("--speed", type=float, required=True, help="Steps per second.")
+@click.option("--dir", "direction", type=click.Choice(["cw", "ccw"]), required=True)
 @click.pass_context
-def spin(ctx, motor, steps, speed, direction):
-    """Spin a motor N steps at a given speed."""
-    motors = ctx.obj["motors"]
-    m = resolve_motor(motor, motors)
-    clockwise = direction.lower() == "cw"
-
-    console.print(f"\n[bold]Spinning Motor {motor} ({m['name']})[/bold]")
-    print_pin_table({motor: m})
-    console.print(
-        f"  Steps: [cyan]{steps}[/cyan]   "
-        f"Speed: [cyan]{speed}[/cyan] steps/s   "
-        f"Direction: [cyan]{direction.upper()}[/cyan]"
-    )
-
-    setup_gpio(motors)
-
-    def _cleanup(sig=None, frame=None):
-        cleanup_gpio()
-        console.print("\n[yellow]Interrupted — GPIO cleaned up.[/yellow]")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _cleanup)
-
+def spin(ctx: click.Context, motor: int, steps: int, speed: float, direction: str) -> None:
+    """Spin one motor a fixed number of microsteps."""
+    m = _pick_motor(ctx, motor)
+    gpio: Gpio = ctx.obj["gpio"]
+    _enable(gpio, m, True)
+    _set_dir(gpio, m, direction)
+    accel = m.acceleration * m.steps_per_deg if m.acceleration < 1000 else m.acceleration
+    delays = _trapezoid_delays(steps, speed, max(accel, 50.0))
+    label = f"spin motor {motor} ({m.name}) {direction} {speed:.0f} sps"
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[cyan]{task.completed}/{task.total}[/cyan] steps"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            task = progress.add_task(
-                f"Motor {motor} {direction.upper()}", total=steps
-            )
-            executed = do_spin(m, steps, speed, clockwise, progress, task)
-
-        console.print(f"[green]Done. Executed {executed}/{steps} steps.[/green]\n")
+        _step_with_progress(gpio, m, steps, delays, label)
+        console.print(f"[green]✓[/green] {steps} steps done on {m.name}")
+    except KeyboardInterrupt:
+        console.print(f"[red]✗[/red] interrupted")
     finally:
-        cleanup_gpio()
+        _enable(gpio, m, False)
 
-# ---------------------------------------------------------------------------
-# sweep command
-# ---------------------------------------------------------------------------
 
 @cli.command()
-@click.option("--motor",     "-m", type=int,   default=1,   show_default=True)
-@click.option("--min-speed", type=float, default=50.0,  show_default=True,
-              help="Minimum speed (steps/sec).")
-@click.option("--max-speed", type=float, default=500.0, show_default=True,
-              help="Maximum speed (steps/sec).")
-@click.option("--steps-per-level", type=int, default=200, show_default=True,
-              help="Steps to run at each speed level.")
-@click.option("--levels",    type=int, default=10,  show_default=True,
-              help="Number of speed levels in ramp.")
+@click.option("--motor", type=click.IntRange(1, 2), required=True)
 @click.pass_context
-def sweep(ctx, motor, min_speed, max_speed, steps_per_level, levels):
-    """Ramp speed from min to max and back, 200 steps at each level."""
-    motors = ctx.obj["motors"]
-    m = resolve_motor(motor, motors)
-
-    if min_speed <= 0 or max_speed <= 0 or min_speed >= max_speed:
-        console.print("[red]Invalid speed range. Need 0 < min-speed < max-speed.[/red]")
-        sys.exit(1)
-
-    # Build ramp: up then back down
-    step_size = (max_speed - min_speed) / max(levels - 1, 1)
-    ramp_up   = [min_speed + i * step_size for i in range(levels)]
-    ramp_down = list(reversed(ramp_up[:-1]))
-    speeds    = ramp_up + ramp_down
-
-    total_steps = steps_per_level * len(speeds)
-
-    console.print(f"\n[bold]Speed sweep — Motor {motor} ({m['name']})[/bold]")
-    print_pin_table({motor: m})
-    console.print(
-        f"  Speed range: [cyan]{min_speed}[/cyan] → [cyan]{max_speed}[/cyan] → "
-        f"[cyan]{min_speed}[/cyan] steps/s over {len(speeds)} levels"
-    )
-    console.print(f"  Steps per level: [cyan]{steps_per_level}[/cyan]   "
-                  f"Total steps: [cyan]{total_steps}[/cyan]")
-
-    setup_gpio(motors)
-
-    def _cleanup(sig=None, frame=None):
-        cleanup_gpio()
-        console.print("\n[yellow]Interrupted — GPIO cleaned up.[/yellow]")
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _cleanup)
-
+def sweep(ctx: click.Context, motor: int) -> None:
+    """Speed ramp test: slow → max_speed → slow over ~5 seconds. Useful to find resonance."""
+    m = _pick_motor(ctx, motor)
+    gpio: Gpio = ctx.obj["gpio"]
+    target = max(m.max_speed_steps, 200.0)
+    # Build a 5s schedule: 2.5s ramp up, 2.5s ramp down (no cruise)
+    duration = 5.0
+    avg_sps = target / 2.0
+    total_steps = int(avg_sps * duration)
+    accel_sps2 = (target - 50.0) / (duration / 2.0)
+    delays = _trapezoid_delays(total_steps, target, accel_sps2)
+    _enable(gpio, m, True)
+    _set_dir(gpio, m, "cw")
+    label = f"sweep motor {motor} ({m.name}) → {target:.0f} sps"
     try:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TextColumn("[cyan]{task.completed}/{task.total}[/cyan] steps"),
-            TimeElapsedColumn(),
-            console=console,
-        ) as progress:
-            overall = progress.add_task("Sweep", total=total_steps)
-
-            for spd in speeds:
-                progress.update(
-                    overall,
-                    description=f"[bold]{spd:6.1f}[/bold] steps/s"
-                )
-                do_spin(m, steps_per_level, spd, clockwise=True,
-                        progress=progress, task_id=overall)
-
-        console.print(f"[green]Sweep complete.[/green]\n")
+        _step_with_progress(gpio, m, total_steps, delays, label)
+        console.print(f"[green]✓[/green] sweep complete on {m.name}")
+    except KeyboardInterrupt:
+        console.print(f"[red]✗[/red] interrupted")
     finally:
-        cleanup_gpio()
+        _enable(gpio, m, False)
 
-# ---------------------------------------------------------------------------
-# test-all command
-# ---------------------------------------------------------------------------
 
 @cli.command("test-all")
 @click.pass_context
-def test_all(ctx):
-    """Smoke test: spin each motor 100 steps CW then CCW, report pass/fail."""
-    motors = ctx.obj["motors"]
+def test_all(ctx: click.Context) -> None:
+    """Smoke test: spin each motor 200 fwd, 200 rev, then disable. Print pass/fail table."""
+    gpio: Gpio = ctx.obj["gpio"]
+    motors = [(1, ctx.obj["az"]), (2, ctx.obj["el"])]
+    table = Table(title="motor_test: smoke test")
+    table.add_column("motor", style="bold")
+    table.add_column("action")
+    table.add_column("status")
 
-    console.print("\n[bold]Smoke Test — All Motors[/bold]")
-    print_pin_table(motors)
-    console.print()
+    overall_ok = True
+    for idx, m in motors:
+        for direction, label in (("cw", "200 steps cw"), ("ccw", "200 steps ccw")):
+            try:
+                _enable(gpio, m, True)
+                _set_dir(gpio, m, direction)
+                delays = _trapezoid_delays(200, 400.0, 800.0)
+                _step_with_progress(gpio, m, 200, delays,
+                                    f"motor {idx} {m.name} {direction}",
+                                    show_progress=False)
+                table.add_row(f"{idx} ({m.name})", label, "[green]✓[/green]")
+            except Exception as e:
+                overall_ok = False
+                table.add_row(f"{idx} ({m.name})", label, f"[red]✗ {e}[/red]")
+            finally:
+                _enable(gpio, m, False)
 
-    setup_gpio(motors)
-
-    results = {}
-
-    def _cleanup(sig=None, frame=None):
-        cleanup_gpio()
-        console.print("\n[yellow]Interrupted — GPIO cleaned up.[/yellow]")
+    console.print(table)
+    if overall_ok:
+        console.print("[green]✓[/green] all motors passed")
         sys.exit(0)
+    console.print("[red]✗[/red] one or more motors failed")
+    sys.exit(1)
 
-    signal.signal(signal.SIGINT, _cleanup)
 
+def _read_key() -> Optional[str]:
+    """Read one keypress (incl. arrow escape sequences). Returns None on non-tty."""
+    if not sys.stdin.isatty():
+        return None
+    import termios
+    import tty
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
     try:
-        for mid, m in motors.items():
-            console.print(f"[bold]Motor {mid} ({m['name']})[/bold]")
-            passed = True
-            for direction, clockwise in [("CW", True), ("CCW", False)]:
-                try:
-                    with Progress(
-                        SpinnerColumn(),
-                        TextColumn(f"  {direction}"),
-                        BarColumn(bar_width=30),
-                        TextColumn("[cyan]{task.completed}/{task.total}[/cyan]"),
-                        console=console,
-                        transient=True,
-                    ) as progress:
-                        task = progress.add_task(direction, total=100)
-                        executed = do_spin(m, 100, 100.0, clockwise, progress, task)
-
-                    if executed == 100:
-                        console.print(f"  {direction}: [green]PASS[/green] (100 steps)")
-                    else:
-                        console.print(f"  {direction}: [red]FAIL[/red] ({executed}/100 steps)")
-                        passed = False
-                except Exception as exc:
-                    console.print(f"  {direction}: [red]ERROR[/red] — {exc}")
-                    passed = False
-
-            results[mid] = passed
-            console.print()
-
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            ch += sys.stdin.read(2)
+        return ch
     finally:
-        cleanup_gpio()
-
-    # Summary table
-    summary = Table(title="Results", box=box.SIMPLE_HEAVY, show_header=True,
-                    header_style="bold")
-    summary.add_column("Motor", style="bold")
-    summary.add_column("Axis")
-    summary.add_column("Result")
-
-    all_passed = True
-    for mid, passed in results.items():
-        name   = motors[mid]["name"]
-        status = "[green]PASS[/green]" if passed else "[red]FAIL[/red]"
-        summary.add_row(str(mid), name, status)
-        if not passed:
-            all_passed = False
-
-    console.print(summary)
-    if all_passed:
-        console.print("[green bold]All motors passed.[/green bold]\n")
-    else:
-        console.print("[red bold]Some motors failed — check connections.[/red bold]\n")
-        sys.exit(1)
-
-# ---------------------------------------------------------------------------
-# interactive command
-# ---------------------------------------------------------------------------
-
-def run_interactive(stdscr, motors: dict):
-    """Curses-based interactive motor control."""
-    curses.cbreak()
-    curses.noecho()
-    stdscr.keypad(True)
-    stdscr.nodelay(True)       # non-blocking getch
-    curses.curs_set(0)
-
-    # Colour pairs
-    if curses.has_colors():
-        curses.start_color()
-        curses.init_pair(1, curses.COLOR_GREEN,  curses.COLOR_BLACK)
-        curses.init_pair(2, curses.COLOR_YELLOW, curses.COLOR_BLACK)
-        curses.init_pair(3, curses.COLOR_CYAN,   curses.COLOR_BLACK)
-        curses.init_pair(4, curses.COLOR_RED,    curses.COLOR_BLACK)
-        GREEN  = curses.color_pair(1)
-        YELLOW = curses.color_pair(2)
-        CYAN   = curses.color_pair(3)
-        RED    = curses.color_pair(4)
-    else:
-        GREEN = YELLOW = CYAN = RED = curses.A_NORMAL
-
-    BOLD = curses.A_BOLD
-
-    m1 = motors[1]
-    m2 = motors[2]
-    enable_motor(m1, True)
-    enable_motor(m2, True)
-
-    steps = {1: 0, 2: 0}   # cumulative step counters (signed)
-    BASE_SPEED   = 200      # steps/sec normal
-    FAST_SPEED   = 2000     # steps/sec with Shift
-    STEPS_BURST  = 1        # steps per keypress
-
-    def draw(status_msg=""):
-        stdscr.erase()
-        h, w = stdscr.getmaxyx()
-        row = 0
-
-        title = " Interactive Motor Control "
-        stdscr.addstr(row, max(0, (w - len(title)) // 2),
-                      title, BOLD | CYAN)
-        row += 2
-
-        stdscr.addstr(row, 2, "Controls:", BOLD)
-        row += 1
-        controls = [
-            ("Left / Right arrows", f"Motor 1 ({m1['name']}) CW / CCW"),
-            ("Up / Down arrows",    f"Motor 2 ({m2['name']}) UP / DOWN"),
-            ("Hold SHIFT",          "10× speed"),
-            ("Q",                   "Quit"),
-        ]
-        for key, desc in controls:
-            stdscr.addstr(row, 4, f"{key:<25}", YELLOW | BOLD)
-            stdscr.addstr(row, 4 + 25, desc)
-            row += 1
-
-        row += 1
-        stdscr.addstr(row, 2, "Step counts:", BOLD)
-        row += 1
-        stdscr.addstr(row, 4,
-                      f"Motor 1 ({m1['name']:9s}): {steps[1]:+7d} steps",
-                      GREEN | BOLD)
-        row += 1
-        stdscr.addstr(row, 4,
-                      f"Motor 2 ({m2['name']:9s}): {steps[2]:+7d} steps",
-                      GREEN | BOLD)
-        row += 2
-
-        if status_msg:
-            stdscr.addstr(row, 2, status_msg[:w - 3], CYAN)
-            row += 1
-
-        # DRY-RUN banner
-        if DRY_RUN or not HAS_GPIO:
-            msg = " DRY-RUN: no GPIO pulses "
-            stdscr.addstr(h - 2, max(0, (w - len(msg)) // 2), msg,
-                          RED | BOLD)
-
-        stdscr.refresh()
-
-    draw("Ready. Press arrow keys to move motors.")
-
-    while True:
-        key = stdscr.getch()
-
-        if key == -1:
-            time.sleep(0.01)
-            continue
-
-        # Quit
-        if key in (ord("q"), ord("Q")):
-            break
-
-        # Detect shift via curses KEY constants
-        # curses reports shifted arrows as separate keycodes on most terminals
-        motor_id  = None
-        clockwise = None
-        fast      = False
-
-        if key == curses.KEY_LEFT:
-            motor_id, clockwise = 1, True
-        elif key == curses.KEY_RIGHT:
-            motor_id, clockwise = 1, False
-        elif key == curses.KEY_UP:
-            motor_id, clockwise = 2, True
-        elif key == curses.KEY_DOWN:
-            motor_id, clockwise = 2, False
-        # Shifted arrow keys (terminal dependent; common xterm codes)
-        elif key == 393:  # Shift+Left
-            motor_id, clockwise, fast = 1, True, True
-        elif key == 402:  # Shift+Right
-            motor_id, clockwise, fast = 1, False, True
-        elif key == 337:  # Shift+Up
-            motor_id, clockwise, fast = 2, True, True
-        elif key == 336:  # Shift+Down
-            motor_id, clockwise, fast = 2, False, True
-        else:
-            draw()
-            continue
-
-        speed  = FAST_SPEED if fast else BASE_SPEED
-        target = motors[motor_id]
-        set_direction(target, clockwise)
-
-        burst = STEPS_BURST * (10 if fast else 1)
-        pulse_step(target["step"], 1.0 / speed)
-        steps[motor_id] += burst if clockwise else -burst
-
-        speed_label = f"{'FAST' if fast else 'NORM'} {speed} steps/s"
-        axis_label  = f"Motor {motor_id} ({'CW' if clockwise else 'CCW'})"
-        draw(f"{axis_label}  [{speed_label}]")
-
-    enable_motor(m1, False)
-    enable_motor(m2, False)
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
 
 
 @cli.command()
 @click.pass_context
-def interactive(ctx):
-    """Terminal keyboard control: arrows to move motors, Q to quit."""
-    motors = ctx.obj["motors"]
-
-    console.print("\n[bold]Interactive Motor Control[/bold]")
-    print_pin_table(motors)
-    console.print("Entering curses UI — press [bold]Q[/bold] to quit.\n")
-
-    setup_gpio(motors)
-
-    def _cleanup(sig=None, frame=None):
-        cleanup_gpio()
-        sys.exit(0)
-
-    signal.signal(signal.SIGINT, _cleanup)
-
+def interactive(ctx: click.Context) -> None:
+    """Arrow-key control. Up/Down = motor 1, Left/Right = motor 2. q to quit."""
+    if not sys.stdin.isatty():
+        console.print("[red]✗[/red] interactive requires a TTY")
+        sys.exit(2)
+    gpio: Gpio = ctx.obj["gpio"]
+    az, el = ctx.obj["az"], ctx.obj["el"]
+    _enable(gpio, az, True)
+    _enable(gpio, el, True)
+    console.print("[bold]interactive mode[/bold] — ↑/↓ motor 1, ←/→ motor 2, q to quit")
+    JOG_STEPS = 50
+    JOG_SPEED = 400.0
     try:
-        curses.wrapper(run_interactive, motors)
+        while True:
+            key = _read_key()
+            if key is None or key == "q":
+                break
+            mapping = {
+                "\x1b[A": (az, "cw",  "motor 1 ↑"),
+                "\x1b[B": (az, "ccw", "motor 1 ↓"),
+                "\x1b[C": (el, "cw",  "motor 2 →"),
+                "\x1b[D": (el, "ccw", "motor 2 ←"),
+            }
+            if key not in mapping:
+                continue
+            m, direction, label = mapping[key]
+            _set_dir(gpio, m, direction)
+            delays = _trapezoid_delays(JOG_STEPS, JOG_SPEED, 800.0)
+            _step_with_progress(gpio, m, JOG_STEPS, delays, label, show_progress=False)
+            console.print(f"[green]✓[/green] {label} ({JOG_STEPS} steps)")
+    except KeyboardInterrupt:
+        pass
     finally:
-        cleanup_gpio()
+        _enable(gpio, az, False)
+        _enable(gpio, el, False)
+        console.print("[dim]exited interactive[/dim]")
 
-    console.print("[green]Interactive session ended. GPIO cleaned up.[/green]\n")
-
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    cli(obj={})
+    cli()

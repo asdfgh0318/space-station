@@ -1,564 +1,454 @@
-import os
-import time
+"""Two-axis stepper controller for the alt-az antenna tracker.
+
+Drives the Waveshare Stepper Motor HAT (B) on a Raspberry Pi 4B via lgpio.
+On dev machines without lgpio (or when --sim is requested), a no-op GPIO
+shim is used so position math, CLI, and tests still run.
+"""
+
+from __future__ import annotations
+
+import math
 import threading
-import yaml
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
+
 import click
+import yaml
+from rich.console import Console
+from rich.table import Table
 
 try:
-    import lgpio
-    HAS_LGPIO = True
+    import lgpio  # type: ignore
+    _HAS_LGPIO = True
 except ImportError:
-    HAS_LGPIO = False
-
-try:
-    import pigpio
-    HAS_PIGPIO = True
-except ImportError:
-    HAS_PIGPIO = False
-
-# Try connecting to pigpio daemon
-_pi = None
-if HAS_PIGPIO:
-    _pi = pigpio.pi()
-    if not _pi.connected:
-        _pi.stop()
-        _pi = None
-        HAS_PIGPIO = False
-
-# GPIO chip handle for lgpio
-_chip = None
-if not HAS_PIGPIO and HAS_LGPIO:
-    try:
-        _chip = lgpio.gpiochip_open(0)
-    except Exception:
-        HAS_LGPIO = False
-        _chip = None
-
-SIMULATION = not HAS_PIGPIO and not HAS_LGPIO
-if HAS_PIGPIO:
-    BACKEND = "pigpio"
-elif HAS_LGPIO:
-    BACKEND = "lgpio"
-else:
-    BACKEND = "simulation"
-
-# ---------------------------------------------------------------------------
-# GPIO helpers
-# ---------------------------------------------------------------------------
-
-_claimed_pins = set()
-
-def _gpio_setup_output(pin):
-    if SIMULATION:
-        return
-    if HAS_PIGPIO:
-        _pi.set_mode(pin, pigpio.OUTPUT)
-    else:
-        if pin not in _claimed_pins:
-            lgpio.gpio_claim_output(_chip, pin, 0)
-            _claimed_pins.add(pin)
+    lgpio = None  # type: ignore
+    _HAS_LGPIO = False
 
 
-def _gpio_setup_input_pullup(pin):
-    if SIMULATION:
-        return
-    if HAS_PIGPIO:
-        _pi.set_mode(pin, pigpio.INPUT)
-        _pi.set_pull_up_down(pin, pigpio.PUD_UP)
-    else:
-        if pin not in _claimed_pins:
-            lgpio.gpio_claim_input(_chip, pin, lgpio.SET_PULL_UP)
-            _claimed_pins.add(pin)
+# Pulse / setup timings for typical step/dir drivers (TMC2209-class).
+_STEP_PULSE_S = 2e-6      # STEP high pulse width
+_DIR_SETUP_S = 5e-6       # DIR-to-STEP setup time
+_MIN_STEP_INTERVAL_S = 1e-4  # 100 µs floor between rising edges
 
 
-def _gpio_write(pin, value):
-    if SIMULATION:
-        return
-    if HAS_PIGPIO:
-        _pi.write(pin, value)
-    else:
-        lgpio.gpio_write(_chip, pin, value)
+# --------------------------------------------------------------------------- #
+# GPIO backends
+# --------------------------------------------------------------------------- #
 
 
-def _gpio_read(pin):
-    if SIMULATION:
-        return 1
-    if HAS_PIGPIO:
-        return _pi.read(pin)
-    else:
-        return lgpio.gpio_read(_chip, pin)
+class _LgpioBackend:
+    """Thin wrapper over lgpio so the rest of the module is backend-agnostic."""
+
+    mode = "real"
+
+    def __init__(self, chip: int = 0) -> None:
+        self._handle = lgpio.gpiochip_open(chip)
+        self._claimed: set[int] = set()
+
+    def claim_output(self, pin: int, initial: int = 0) -> None:
+        if pin in self._claimed:
+            return
+        lgpio.gpio_claim_output(self._handle, pin, initial)
+        self._claimed.add(pin)
+
+    def write(self, pin: int, level: int) -> None:
+        lgpio.gpio_write(self._handle, pin, level)
+
+    def close(self) -> None:
+        if self._handle is not None:
+            try:
+                lgpio.gpiochip_close(self._handle)
+            finally:
+                self._handle = None
 
 
-def _gpio_cleanup():
-    if SIMULATION:
-        return
-    if HAS_PIGPIO:
-        global _pi
-        if _pi is not None:
-            _pi.stop()
-            _pi = None
-    else:
-        global _chip
-        if _chip is not None:
-            lgpio.gpiochip_close(_chip)
-            _chip = None
+class _SimGpio:
+    """Position-state-only GPIO. Records writes, performs no I/O."""
+
+    mode = "sim"
+
+    def __init__(self) -> None:
+        self.levels: dict[int, int] = {}
+
+    def claim_output(self, pin: int, initial: int = 0) -> None:
+        self.levels[pin] = initial
+
+    def write(self, pin: int, level: int) -> None:
+        self.levels[pin] = level
+
+    def close(self) -> None:
+        self.levels.clear()
 
 
-# ---------------------------------------------------------------------------
-# Trapezoidal acceleration helpers
-# ---------------------------------------------------------------------------
-
-MIN_STEP_SPEED = 100  # steps/s — starting speed for ramp
+# --------------------------------------------------------------------------- #
+# Single-axis controller
+# --------------------------------------------------------------------------- #
 
 
-def _build_delay_profile(total_steps, max_step_speed, accel_steps_per_s2):
-    """
-    Return list of per-step delays (seconds) for a trapezoidal profile.
-    accel_steps_per_s2 is already in steps/s^2.
-    """
-    if total_steps == 0:
-        return []
-
-    start_speed = min(MIN_STEP_SPEED, max_step_speed)
-    # Steps to ramp from start_speed to max_step_speed
-    ramp_steps = int((max_step_speed ** 2 - start_speed ** 2) / (2 * accel_steps_per_s2))
-    ramp_steps = max(1, ramp_steps)
-
-    # If not enough room for full ramp, cut ramp short
-    half = total_steps // 2
-    ramp_steps = min(ramp_steps, half)
-
-    delays = []
-
-    for i in range(total_steps):
-        if i < ramp_steps:
-            # Ramp up
-            speed = (start_speed ** 2 + 2 * accel_steps_per_s2 * i) ** 0.5
-        elif i >= total_steps - ramp_steps:
-            # Ramp down (mirror of ramp up)
-            steps_from_end = total_steps - 1 - i
-            speed = (start_speed ** 2 + 2 * accel_steps_per_s2 * steps_from_end) ** 0.5
-        else:
-            speed = max_step_speed
-
-        speed = max(speed, start_speed)
-        speed = min(speed, max_step_speed)
-        delays.append(1.0 / speed)
-
-    return delays
-
-
-# ---------------------------------------------------------------------------
-# StepperAxis
-# ---------------------------------------------------------------------------
-
+@dataclass
 class StepperAxis:
-    def __init__(self, name, cfg):
-        self.name = name
-        self.gear_ratio = cfg.get("gear_ratio", 1)
-        self.steps_per_rev = cfg.get("steps_per_rev", 200)
-        self.microstepping = cfg.get("microstepping", 16)
-        self.min_angle = cfg.get("min_angle", 0.0)
-        self.max_angle = cfg.get("max_angle", 360.0)
-        self.max_speed = cfg.get("max_speed", 10.0)   # deg/s
-        self.acceleration = cfg.get("acceleration", 5.0)  # deg/s^2
+    name: str
+    step_pin: int
+    dir_pin: int
+    enable_pin: int
+    steps_per_rev: int
+    microstepping: int
+    gear_ratio: float
+    max_speed: float          # deg/s
+    acceleration: float       # deg/s²
+    min_angle: float
+    max_angle: float
+    gpio: Any = None
+    position_deg: float = 0.0
+    enabled: bool = False
+    _stop_flag: threading.Event = field(default_factory=threading.Event, repr=False)
+    _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
-        self.step_pin = cfg["step_pin"]
-        self.dir_pin = cfg["dir_pin"]
-        self.enable_pin = cfg["enable_pin"]
-        self.home_switch_pin = cfg.get("home_switch_pin", None)
-        self.home_switch_enabled = cfg.get("home_switch_enabled", False)
-        self.home_offset = cfg.get("home_offset", 0.0)
+    def __post_init__(self) -> None:
+        if self.gpio is None:
+            self.gpio = _SimGpio()
+        self.gpio.claim_output(self.step_pin, 0)
+        self.gpio.claim_output(self.dir_pin, 0)
+        self.gpio.claim_output(self.enable_pin, 1)  # active-low: 1 = disabled
 
-        self._position_steps = 0
-        self._enabled = False
-        self._lock = threading.Lock()
-        self._stop_event = threading.Event()
-
-        self._setup_pins()
-
-    # ------------------------------------------------------------------
-    @property
-    def steps_per_degree(self):
-        return (self.steps_per_rev * self.microstepping * self.gear_ratio) / 360.0
+    # ---- conversions ----
 
     @property
-    def position_deg(self):
-        with self._lock:
-            return self._position_steps / self.steps_per_degree
+    def total_steps_per_rev(self) -> int:
+        return int(self.steps_per_rev * self.microstepping * self.gear_ratio)
 
     @property
-    def position_steps(self):
+    def degrees_per_step(self) -> float:
+        return 360.0 / self.total_steps_per_rev
+
+    @property
+    def position_steps(self) -> int:
+        return int(round(self.position_deg / self.degrees_per_step))
+
+    # ---- enable line ----
+
+    def enable(self) -> None:
+        self.gpio.write(self.enable_pin, 0)
+        self.enabled = True
+
+    def disable(self) -> None:
+        self.gpio.write(self.enable_pin, 1)
+        self.enabled = False
+
+    # ---- motion primitives ----
+
+    def step(self, direction: int) -> None:
+        if direction not in (+1, -1):
+            raise ValueError("direction must be +1 or -1")
+        self.gpio.write(self.dir_pin, 1 if direction > 0 else 0)
+        time.sleep(_DIR_SETUP_S)
+        self.gpio.write(self.step_pin, 1)
+        time.sleep(_STEP_PULSE_S)
+        self.gpio.write(self.step_pin, 0)
+        self.position_deg += direction * self.degrees_per_step
+
+    def stop(self) -> None:
+        self._stop_flag.set()
+
+    def move_steps(self, n_steps: int, direction: int) -> None:
+        """Trapezoidal velocity profile, sleep-paced between steps."""
+        if n_steps <= 0:
+            return
         with self._lock:
-            return self._position_steps
+            self._stop_flag.clear()
+            if not self.enabled:
+                self.enable()
 
-    # ------------------------------------------------------------------
-    def _setup_pins(self):
-        _gpio_setup_output(self.step_pin)
-        _gpio_setup_output(self.dir_pin)
-        _gpio_setup_output(self.enable_pin)
+            v_max = self.max_speed / self.degrees_per_step       # steps/s
+            accel = self.acceleration / self.degrees_per_step    # steps/s²
+            v_max = max(v_max, 1.0)
+            accel = max(accel, 1.0)
 
-        # Start disabled
-        _gpio_write(self.enable_pin, 1)  # HIGH = disabled (active-low)
+            ramp_steps = min(int(v_max * v_max / (2.0 * accel)), n_steps // 2)
+            cruise_steps = n_steps - 2 * ramp_steps
 
-        if self.home_switch_enabled and self.home_switch_pin is not None:
-            _gpio_setup_input_pullup(self.home_switch_pin)
-
-        if SIMULATION:
-            print(f"[SIM] {self.name}: pins set up (STEP={self.step_pin} DIR={self.dir_pin} EN={self.enable_pin})")
-
-    def enable(self):
-        _gpio_write(self.enable_pin, 0)  # LOW = enabled
-        self._enabled = True
-        if SIMULATION:
-            print(f"[SIM] {self.name}: enabled")
-
-    def disable(self):
-        _gpio_write(self.enable_pin, 1)  # HIGH = disabled
-        self._enabled = False
-        if SIMULATION:
-            print(f"[SIM] {self.name}: disabled")
-
-    # ------------------------------------------------------------------
-    def step(self, count, direction=1):
-        """
-        Move count steps in direction (1=CW, -1=CCW).
-        Uses pigpio wave generation if available, else RPi.GPIO with sleep.
-        """
-        if count <= 0:
-            return
-
-        self._stop_event.clear()
-
-        # Set direction pin: HIGH=CW, LOW=CCW
-        dir_level = 1 if direction >= 0 else 0
-        _gpio_write(self.dir_pin, dir_level)
-        time.sleep(0.000005)  # direction setup time
-
-        max_step_speed = self.max_speed * self.steps_per_degree
-        accel_steps = self.acceleration * self.steps_per_degree
-        delays = _build_delay_profile(count, max_step_speed, accel_steps)
-
-        if SIMULATION:
-            total_time = sum(delays)
-            print(f"[SIM] {self.name}: {count} steps dir={'CW' if direction>=0 else 'CCW'} "
-                  f"~{total_time:.2f}s  pos_after={self._position_steps + direction*count}")
-            with self._lock:
-                self._position_steps += direction * count
-            return
-
-        if HAS_PIGPIO:
-            self._step_pigpio(count, direction, delays)
-        else:
-            self._step_gpio(count, direction, delays)
-
-    def _step_gpio(self, count, direction, delays):
-        step_pin = self.step_pin
-        for i, delay in enumerate(delays):
-            if self._stop_event.is_set():
-                break
-            _gpio_write(step_pin, 1)
-            time.sleep(0.000002)
-            _gpio_write(step_pin, 0)
-            time.sleep(max(delay - 0.000002, 0.000001))
-            with self._lock:
-                self._position_steps += direction
-
-    def _step_pigpio(self, count, direction, delays):
-        pi = _get_pi()
-        step_pin = self.step_pin
-
-        # pigpio wave-based stepping — batch into chunks to avoid wave size limits
-        CHUNK = 256
-        steps_done = 0
-
-        for chunk_start in range(0, count, CHUNK):
-            if self._stop_event.is_set():
-                break
-
-            chunk_delays = delays[chunk_start: chunk_start + CHUNK]
-            pulses = []
-            for delay in chunk_delays:
-                # HIGH for 2μs, then LOW for remainder
-                high_us = 2
-                total_us = max(int(delay * 1_000_000), high_us + 1)
-                low_us = total_us - high_us
-
-                pulses.append(pigpio.pulse(1 << step_pin, 0, high_us))
-                pulses.append(pigpio.pulse(0, 1 << step_pin, low_us))
-
-            pi.wave_clear()
-            pi.wave_add_generic(pulses)
-            wid = pi.wave_create()
-            if wid < 0:
-                # Fallback to sleep-based for this chunk
-                for delay in chunk_delays:
-                    if self._stop_event.is_set():
-                        break
-                    pi.write(step_pin, 1)
-                    time.sleep(0.000002)
-                    pi.write(step_pin, 0)
-                    time.sleep(max(delay - 0.000002, 0.000001))
-                    with self._lock:
-                        self._position_steps += direction
-                continue
-
-            pi.wave_send_once(wid)
-            while pi.wave_tx_busy():
-                if self._stop_event.is_set():
-                    pi.wave_tx_stop()
-                    break
-                time.sleep(0.001)
-
-            pi.wave_delete(wid)
-            steps_done = min(chunk_start + len(chunk_delays), count)
-            with self._lock:
-                self._position_steps += direction * len(chunk_delays)
-
-    # ------------------------------------------------------------------
-    def move_to(self, angle):
-        angle = max(self.min_angle, min(self.max_angle, angle))
-        target_steps = int(round(angle * self.steps_per_degree))
-
-        with self._lock:
-            current = self._position_steps
-
-        delta = target_steps - current
-        if delta == 0:
-            return
-
-        direction = 1 if delta > 0 else -1
-        self.step(abs(delta), direction)
-
-    # ------------------------------------------------------------------
-    def home(self):
-        if self.home_switch_enabled and self.home_switch_pin is not None:
-            self.enable()
-            # Move toward home (negative direction) until switch triggers
-            while _gpio_read(self.home_switch_pin) != 0:
-                if self._stop_event.is_set():
+            for i in range(n_steps):
+                if self._stop_flag.is_set():
                     return
-                self.step(10, -1)
-                time.sleep(0.01)
+                if i < ramp_steps:
+                    v = math.sqrt(2.0 * accel * (i + 1))
+                elif i < ramp_steps + cruise_steps:
+                    v = v_max
+                else:
+                    remaining = n_steps - i
+                    v = math.sqrt(2.0 * accel * max(remaining, 1))
+                v = min(max(v, 1.0), v_max)
+                interval = max(1.0 / v, _MIN_STEP_INTERVAL_S)
+                self.step(direction)
+                time.sleep(max(interval - _STEP_PULSE_S - _DIR_SETUP_S, 0.0))
 
-            with self._lock:
-                self._position_steps = int(round(self.home_offset * self.steps_per_degree))
+    def goto_deg(self, target_deg: float) -> None:
+        target = max(self.min_angle, min(self.max_angle, target_deg))
+        delta_deg = target - self.position_deg
+        n_steps = int(round(abs(delta_deg) / self.degrees_per_step))
+        if n_steps == 0:
+            return
+        direction = +1 if delta_deg > 0 else -1
+        self.move_steps(n_steps, direction)
+        # Snap to commanded value to avoid rounding drift across many moves.
+        self.position_deg = target
 
-            if SIMULATION:
-                print(f"[SIM] {self.name}: homed via switch, offset={self.home_offset}")
-        else:
-            with self._lock:
-                self._position_steps = int(round(self.home_offset * self.steps_per_degree))
-            if SIMULATION:
-                print(f"[SIM] {self.name}: homed (no switch), position set to {self.home_offset} deg")
-
-    def stop(self):
-        self._stop_event.set()
-
-    # ------------------------------------------------------------------
-    def get_position(self):
-        return self.position_deg
-
-    def get_status(self):
+    def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name,
             "position_deg": round(self.position_deg, 4),
             "position_steps": self.position_steps,
-            "enabled": self._enabled,
+            "enabled": self.enabled,
             "min_angle": self.min_angle,
             "max_angle": self.max_angle,
-            "steps_per_degree": round(self.steps_per_degree, 4),
+            "max_speed": self.max_speed,
+            "degrees_per_step": round(self.degrees_per_step, 6),
         }
 
 
-# ---------------------------------------------------------------------------
-# AntennaTracker
-# ---------------------------------------------------------------------------
-
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+# --------------------------------------------------------------------------- #
+# Two-axis orchestration
+# --------------------------------------------------------------------------- #
 
 
 class AntennaTracker:
-    def __init__(self, config_path=None):
-        path = config_path or CONFIG_PATH
-        with open(path, "r") as f:
-            raw = yaml.safe_load(f)
+    def __init__(
+        self,
+        azimuth: StepperAxis,
+        elevation: StepperAxis,
+        config: dict[str, Any],
+        gpio: Any,
+    ) -> None:
+        self.az = azimuth
+        self.el = elevation
+        self.config = config
+        self.gpio = gpio
 
-        cfg = raw["tracker"]
-        self.az = StepperAxis("azimuth", cfg["azimuth"])
-        self.el = StepperAxis("elevation", cfg["elevation"])
-        self.park_az = cfg.get("park_azimuth", 0.0)
-        self.park_el = cfg.get("park_elevation", 90.0)
-        self.STEPS_PER_DEG_AZ = self.az.steps_per_degree
-        self.STEPS_PER_DEG_EL = self.el.steps_per_degree
-        self.jog_size_deg = 1.0
-        self._config_path = path
+    # ---- factory ----
 
-    def enable(self):
-        self.az.enable()
-        self.el.enable()
+    @classmethod
+    def from_config(
+        cls,
+        path: str | Path,
+        gpio_backend: str = "auto",
+    ) -> AntennaTracker:
+        cfg_path = Path(path)
+        with cfg_path.open("r", encoding="utf-8") as fh:
+            cfg = yaml.safe_load(fh)
 
-    def disable(self):
-        self.az.disable()
-        self.el.disable()
+        tracker_cfg = cfg["tracker"]
+        gpio = cls._make_gpio(gpio_backend)
 
-    def goto(self, az, el):
-        self.enable()
-        # Move both axes concurrently
-        t_az = threading.Thread(target=self.az.move_to, args=(az,), daemon=True)
-        t_el = threading.Thread(target=self.el.move_to, args=(el,), daemon=True)
-        t_az.start()
-        t_el.start()
-        t_az.join()
-        t_el.join()
+        az_cfg = tracker_cfg["azimuth"]
+        el_cfg = tracker_cfg["elevation"]
+        az = cls._build_axis("azimuth", az_cfg, gpio)
+        el = cls._build_axis("elevation", el_cfg, gpio)
+        return cls(az, el, cfg, gpio)
 
-    def home(self):
-        t_az = threading.Thread(target=self.az.home, daemon=True)
-        t_el = threading.Thread(target=self.el.home, daemon=True)
-        t_az.start()
-        t_el.start()
-        t_az.join()
-        t_el.join()
+    @staticmethod
+    def _make_gpio(backend: str) -> Any:
+        if backend == "sim":
+            return _SimGpio()
+        if backend == "real":
+            if not _HAS_LGPIO:
+                raise RuntimeError("lgpio not available — install lgpio or use sim mode")
+            return _LgpioBackend()
+        # auto
+        if _HAS_LGPIO:
+            try:
+                return _LgpioBackend()
+            except Exception:
+                return _SimGpio()
+        return _SimGpio()
 
-    def park(self):
-        self.goto(self.park_az, self.park_el)
+    @staticmethod
+    def _build_axis(name: str, c: dict[str, Any], gpio: Any) -> StepperAxis:
+        return StepperAxis(
+            name=name,
+            step_pin=int(c["step_pin"]),
+            dir_pin=int(c["dir_pin"]),
+            enable_pin=int(c["enable_pin"]),
+            steps_per_rev=int(c["steps_per_rev"]),
+            microstepping=int(c["microstepping"]),
+            gear_ratio=float(c["gear_ratio"]),
+            max_speed=float(c["max_speed"]),
+            acceleration=float(c["acceleration"]),
+            min_angle=float(c["min_angle"]),
+            max_angle=float(c["max_angle"]),
+            gpio=gpio,
+        )
 
-    def stop(self):
+    # ---- motion ----
+
+    def goto(self, az_deg: float, el_deg: float) -> None:
+        threads = [
+            threading.Thread(target=self.az.goto_deg, args=(az_deg,), daemon=True),
+            threading.Thread(target=self.el.goto_deg, args=(el_deg,), daemon=True),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+    def home(self) -> None:
+        """Naive home: drive both axes to 0,0 in software (no limit switch yet)."""
+        self.goto(self.az.min_angle, self.el.min_angle)
+        self.az.position_deg = 0.0
+        self.el.position_deg = 0.0
+
+    def park(self) -> None:
+        tcfg = self.config.get("tracker", {})
+        az_park = float(tcfg.get("park_azimuth", 0.0))
+        el_park = float(tcfg.get("park_elevation", 90.0))
+        self.goto(az_park, el_park)
+
+    def stop(self) -> None:
         self.az.stop()
         self.el.stop()
 
-    def jog(self, axis, steps, direction):
-        ax = self.az if axis == "az" else self.el
-        ax.enable()
-        d = 1 if direction == "cw" else -1
-        ax.step(steps, d)
+    def enable_all(self) -> None:
+        self.az.enable()
+        self.el.enable()
 
-    def get_status(self):
+    def disable_all(self) -> None:
+        self.az.disable()
+        self.el.disable()
+
+    def status(self) -> dict[str, Any]:
         return {
-            "azimuth": self.az.get_status(),
-            "elevation": self.el.get_status(),
-            "backend": BACKEND,
-            "simulation": SIMULATION,
-            "bench_mode": True,
-            "steps_per_deg_az": self.STEPS_PER_DEG_AZ,
-            "steps_per_deg_el": self.STEPS_PER_DEG_EL,
+            "az": self.az.to_dict(),
+            "el": self.el.to_dict(),
+            "mode": getattr(self.gpio, "mode", "unknown"),
         }
 
-    def get_config(self):
-        return {
-            "azimuth": self.az.get_status(),
-            "elevation": self.el.get_status(),
-            "park_az": self.park_az,
-            "park_el": self.park_el,
-        }
-
-    @property
-    def limits(self):
-        return {
-            "az_min": self.az.min_angle, "az_max": self.az.max_angle,
-            "el_min": self.el.min_angle, "el_max": self.el.max_angle,
-        }
-
-    def set_limit(self, axis, limit, value):
-        ax = self.az if axis == "az" else self.el
-        if limit == "min":
-            ax.min_angle = value
-        else:
-            ax.max_angle = value
-
-    def cleanup(self):
-        self.disable()
-        _gpio_cleanup()
+    def close(self) -> None:
+        self.disable_all()
+        self.gpio.close()
 
 
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
 # CLI
-# ---------------------------------------------------------------------------
+# --------------------------------------------------------------------------- #
+
+
+_DEFAULT_CONFIG = "tracker/config.yaml"
+
+
+def _backend(sim: bool) -> str:
+    return "sim" if sim else "auto"
+
+
+def _load(config: str, sim: bool) -> AntennaTracker:
+    return AntennaTracker.from_config(config, gpio_backend=_backend(sim))
+
+
+def _render_status(tracker: AntennaTracker) -> None:
+    s = tracker.status()
+    console = Console()
+    table = Table(title=f"Antenna tracker status (mode={s['mode']})")
+    table.add_column("axis", style="bold cyan")
+    table.add_column("position (deg)", justify="right")
+    table.add_column("position (steps)", justify="right")
+    table.add_column("enabled", justify="center")
+    table.add_column("range", justify="right")
+    table.add_column("deg/step", justify="right")
+    for key in ("az", "el"):
+        a = s[key]
+        table.add_row(
+            a["name"],
+            f"{a['position_deg']:.4f}",
+            f"{a['position_steps']}",
+            "yes" if a["enabled"] else "no",
+            f"[{a['min_angle']:.0f}, {a['max_angle']:.0f}]",
+            f"{a['degrees_per_step']:.6f}",
+        )
+    console.print(table)
+
 
 @click.group()
+@click.option("--config", default=_DEFAULT_CONFIG, show_default=True,
+              help="Path to tracker config YAML.")
+@click.option("--sim", is_flag=True, help="Force simulation GPIO backend.")
 @click.pass_context
-def cli(ctx):
+def cli(ctx: click.Context, config: str, sim: bool) -> None:
+    """Alt-az antenna tracker control."""
     ctx.ensure_object(dict)
-    ctx.obj["tracker"] = AntennaTracker()
+    ctx.obj["config"] = config
+    ctx.obj["sim"] = sim
 
 
 @cli.command()
 @click.pass_context
-def status(ctx):
-    st = ctx.obj["tracker"].get_status()
-    az = st["azimuth"]
-    el = st["elevation"]
-    click.echo(f"Backend : {st['backend']}")
-    click.echo(f"AZ      : {az['position_deg']:.4f} deg  ({az['position_steps']} steps)  "
-               f"enabled={az['enabled']}")
-    click.echo(f"EL      : {el['position_deg']:.4f} deg  ({el['position_steps']} steps)  "
-               f"enabled={el['enabled']}")
+def status(ctx: click.Context) -> None:
+    """Show current axis state."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
+    _render_status(tracker)
+    tracker.close()
 
 
 @cli.command()
-@click.option("--az", required=True, type=float, help="Target azimuth in degrees")
-@click.option("--el", required=True, type=float, help="Target elevation in degrees")
+@click.argument("az", type=float)
+@click.argument("el", type=float)
 @click.pass_context
-def goto(ctx, az, el):
-    tracker = ctx.obj["tracker"]
-    click.echo(f"Moving to AZ={az} EL={el}")
+def goto(ctx: click.Context, az: float, el: float) -> None:
+    """Move to (AZ, EL) in degrees."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
+    tracker.enable_all()
     tracker.goto(az, el)
-    tracker.disable()
-    st = tracker.get_status()
-    click.echo(f"Done — AZ={st['azimuth']['position_deg']:.4f} EL={st['elevation']['position_deg']:.4f}")
-
-
-@cli.command(name="home")
-@click.pass_context
-def home_cmd(ctx):
-    tracker = ctx.obj["tracker"]
-    click.echo("Homing both axes...")
-    tracker.home()
-    tracker.disable()
-    click.echo("Homed.")
+    _render_status(tracker)
+    tracker.close()
 
 
 @cli.command()
 @click.pass_context
-def park(ctx):
-    tracker = ctx.obj["tracker"]
-    click.echo(f"Parking at AZ={tracker.park_az} EL={tracker.park_el}")
+def home(ctx: click.Context) -> None:
+    """Home both axes."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
+    tracker.enable_all()
+    tracker.home()
+    _render_status(tracker)
+    tracker.close()
+
+
+@cli.command()
+@click.pass_context
+def park(ctx: click.Context) -> None:
+    """Move to park position."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
+    tracker.enable_all()
     tracker.park()
-    tracker.disable()
-    click.echo("Parked.")
+    _render_status(tracker)
+    tracker.close()
 
 
-@cli.command(name="step")
-@click.option("--motor", required=True, type=click.Choice(["az", "el"]),
-              help="Which motor to move")
-@click.option("--count", required=True, type=int, help="Number of steps")
-@click.option("--dir", "direction", default="cw", type=click.Choice(["cw", "ccw"]),
-              help="Direction: cw or ccw")
+@cli.command()
+@click.option("--motor", type=click.Choice(["az", "el"]), required=True)
+@click.option("--count", type=int, required=True, help="Number of microsteps.")
+@click.option("--dir", "direction", type=click.Choice(["cw", "ccw"]), default="cw",
+              show_default=True)
 @click.pass_context
-def step_cmd(ctx, motor, count, direction):
-    tracker = ctx.obj["tracker"]
+def step(ctx: click.Context, motor: str, count: int, direction: str) -> None:
+    """Pulse N microsteps on one motor."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
     axis = tracker.az if motor == "az" else tracker.el
-    dir_val = 1 if direction == "cw" else -1
     axis.enable()
-    click.echo(f"Stepping {motor} {count} steps {direction.upper()}")
-    axis.step(count, dir_val)
-    axis.disable()
-    click.echo(f"Done — position: {axis.position_deg:.4f} deg")
+    axis.move_steps(count, +1 if direction == "cw" else -1)
+    _render_status(tracker)
+    tracker.close()
 
 
-@cli.command(name="enable")
+@cli.command()
 @click.pass_context
-def enable_cmd(ctx):
-    ctx.obj["tracker"].enable()
-    click.echo("Motors enabled.")
-
-
-@cli.command(name="disable")
-@click.pass_context
-def disable_cmd(ctx):
-    ctx.obj["tracker"].disable()
-    click.echo("Motors disabled.")
+def stop(ctx: click.Context) -> None:
+    """Disable drivers and stop motion."""
+    tracker = _load(ctx.obj["config"], ctx.obj["sim"])
+    tracker.stop()
+    tracker.disable_all()
+    _render_status(tracker)
+    tracker.close()
 
 
 if __name__ == "__main__":
-    cli()
+    cli(obj={})

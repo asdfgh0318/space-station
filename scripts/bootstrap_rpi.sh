@@ -1,161 +1,229 @@
-#!/bin/bash
-# Space Station — Raspberry Pi Bootstrap Script
-# Tested on: Debian Trixie (RPi OS Lite 64-bit)
-# Usage: bash scripts/bootstrap_rpi.sh
+#!/usr/bin/env bash
+# =============================================================================
+# bootstrap_rpi.sh -- one-shot system prep for the space-station tracker
+# -----------------------------------------------------------------------------
+# Target: Raspberry Pi 4B running Debian Trixie 64-bit (Raspberry Pi OS Lite).
+#
+# What this script does:
+#   * Installs APT packages for GPIO (lgpio), RTL-SDR, I2C tooling, and the
+#     Python venv runtime.
+#   * Pre-installs C++/CMake build deps for the upcoming inmarsat-sniffer
+#     integration (see the TODO seam below) so the future submodule merge is
+#     a one-command CMake build.
+#   * Enables I2C (Waveshare Stepper Motor HAT (B) talks over I2C), writes
+#     RTL-SDR udev rules, and blacklists the kernel DVB driver that would
+#     otherwise grab the dongle.
+#   * Creates a Python venv with --system-site-packages so apt-installed
+#     python3-lgpio is visible inside it.
+#   * Appends convenience aliases (ss-update / ss-start / ss-test / ss-debug)
+#     to ~/.bashrc.
+#   * Runs non-fatal smoke tests (lgpio open, Python imports, RTL-SDR USB).
+#
+# Idempotent: re-running will not duplicate udev/modprobe/bashrc entries.
+# Best-effort: optional packages and Pi-only steps print a yellow warning and
+# continue rather than aborting the whole run.
+#
+# Inmarsat seam: a future commit will add vendor/inmarsat-sniffer/ as a git
+# submodule. The build deps below are installed up-front so that step reduces
+# to `cmake -S vendor/inmarsat-sniffer -B build && cmake --build build`.
+# =============================================================================
 
 set -euo pipefail
 
-REPO_URL="https://github.com/asdfgh0318/space-station.git"
-INSTALL_DIR="$HOME/space-station"
+# -----------------------------------------------------------------------------
+# Variables
+# -----------------------------------------------------------------------------
+INSTALL_DIR=$(cd "$(dirname "$0")/.." && pwd)
+VENV_DIR="$INSTALL_DIR/.venv"
 
-echo "========================================="
-echo "  SPACE STATION — RPi Bootstrap"
-echo "========================================="
-echo "Hostname: $(hostname)"
-echo "User:     $(whoami)"
-echo "OS:       $(grep PRETTY_NAME /etc/os-release | cut -d= -f2 | tr -d '\"')"
-echo ""
-
-# Warn if hostname isn't radioteleskop
-if [ "$(hostname)" != "radioteleskop" ]; then
-    echo "⚠  Hostname is '$(hostname)', expected 'radioteleskop'"
-    echo "   Set it with: sudo hostnamectl set-hostname radioteleskop"
-    echo ""
+if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
+    RED=$(tput setaf 1)
+    GREEN=$(tput setaf 2)
+    YELLOW=$(tput setaf 3)
+    RESET=$(tput sgr0)
+else
+    RED=""
+    GREEN=""
+    YELLOW=""
+    RESET=""
 fi
 
-# 1. System update
-echo "[1/9] System update..."
-sudo apt-get update -qq
-sudo apt-get upgrade -y -qq
+ok()   { echo "${GREEN}[OK]${RESET} $*"; }
+warn() { echo "${YELLOW}[WARN]${RESET} $*"; }
+err()  { echo "${RED}[ERR]${RESET} $*"; }
+info() { echo "==> $*"; }
 
-# 2. Install packages
-echo "[2/9] Installing packages..."
-sudo apt-get install -y -qq \
-    python3-pip python3-venv python3-dev \
-    python3-lgpio \
-    python3-smbus i2c-tools \
+export DEBIAN_FRONTEND=noninteractive
+
+# -----------------------------------------------------------------------------
+# Pre-flight: detect Raspberry Pi
+# -----------------------------------------------------------------------------
+IS_PI=0
+if [ -r /proc/device-tree/model ] && grep -qi 'raspberry pi' /proc/device-tree/model 2>/dev/null; then
+    IS_PI=1
+    ok "Raspberry Pi detected: $(tr -d '\0' < /proc/device-tree/model)"
+else
+    warn "Not running on a Raspberry Pi -- continuing in dev-machine mode (skipping Pi-only steps)."
+fi
+
+# -----------------------------------------------------------------------------
+# APT update + base packages
+# -----------------------------------------------------------------------------
+info "Updating APT package index..."
+sudo apt-get update -y || warn "apt-get update returned non-zero -- continuing."
+
+info "Installing base packages..."
+sudo apt-get install -y \
+    python3-lgpio python3-pip python3-venv \
     librtlsdr-dev rtl-sdr \
-    git
+    i2c-tools \
+    git curl jq
 
-# Optional: pigpio/RPi.GPIO (may not exist on Trixie — don't fail)
-echo "  Installing optional GPIO packages (may skip on Trixie)..."
-sudo apt-get install -y -qq pigpio-tools python3-pigpio 2>/dev/null || echo "  → pigpio not available (OK)"
-sudo apt-get install -y -qq python3-rpi.gpio rpi.gpio-common 2>/dev/null || echo "  → RPi.GPIO not available (OK)"
+# pigpio-tools may be unavailable on Trixie -- best-effort.
+sudo apt-get install -y pigpio-tools \
+    || warn "pigpio-tools not available on this release -- skipping (lgpio is the supported path on Trixie)."
 
-# 3. Enable I2C
-echo "[3/9] Enabling I2C..."
-sudo raspi-config nonint do_i2c 0
+# -----------------------------------------------------------------------------
+# TODO: vendor inmarsat-sniffer per docs/archive/merge_plan.html
+# Pre-install C++ build deps so the future submodule build is a single CMake
+# invocation. Each install is best-effort; a missing package on Trixie should
+# not abort the whole bootstrap.
+# -----------------------------------------------------------------------------
+info "Installing inmarsat-sniffer build deps (best-effort)..."
+sudo apt-get install -y cmake build-essential pkg-config \
+    || warn "cmake/build-essential install failed -- inmarsat build will need manual fix-up."
+sudo apt-get install -y libacars2-dev \
+    || warn "libacars2-dev not found on this release -- inmarsat ACARS decode will need manual install."
+sudo apt-get install -y libzmq3-dev \
+    || warn "libzmq3-dev not found on this release -- inmarsat ZMQ transport will need manual install."
+sudo apt-get install -y libmosquitto-dev \
+    || warn "libmosquitto-dev not found on this release -- inmarsat MQTT transport will need manual install."
 
-# 4. Enable USB boot
-echo "[4/9] Enabling USB boot..."
-sudo raspi-config nonint do_boot_rom E1 2>/dev/null || echo "  → raspi-config boot_rom not supported (OK)"
-
-# 5. RTL-SDR udev rules
-echo "[5/9] Setting up RTL-SDR..."
-cat << 'UDEV' | sudo tee /etc/udev/rules.d/20-rtlsdr.rules > /dev/null
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", GROUP="plugdev", MODE="0666"
-SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", GROUP="plugdev", MODE="0666"
-UDEV
-sudo udevadm control --reload-rules
-sudo udevadm trigger
-
-# Blacklist DVB-T driver
-echo "blacklist dvb_usb_rtl28xxu" | sudo tee /etc/modprobe.d/blacklist-rtlsdr.conf > /dev/null
-echo "blacklist rtl2832" | sudo tee -a /etc/modprobe.d/blacklist-rtlsdr.conf > /dev/null
-
-# 6. Clone or update repo
-echo "[6/9] Setting up repository..."
-if [ ! -d "$INSTALL_DIR" ]; then
-    git clone "$REPO_URL" "$INSTALL_DIR"
+# -----------------------------------------------------------------------------
+# Enable interfaces (Pi-only, idempotent)
+# -----------------------------------------------------------------------------
+if [ "$IS_PI" = "1" ] && command -v raspi-config >/dev/null 2>&1; then
+    info "Enabling I2C..."
+    sudo raspi-config nonint do_i2c 0 || warn "Could not enable I2C via raspi-config."
+    info "Enabling USB-boot ROM (best-effort)..."
+    sudo raspi-config nonint do_boot_rom E1 || warn "Could not set USB-boot ROM via raspi-config."
 else
-    cd "$INSTALL_DIR"
-    git pull --ff-only || echo "  → git pull failed (maybe local changes — OK)"
+    warn "Skipping raspi-config interface tweaks (not on Pi or raspi-config missing)."
 fi
 
-# 7. Python virtual environment
-echo "[7/9] Setting up Python environment..."
-cd "$INSTALL_DIR"
-python3 -m venv --system-site-packages .venv
-source .venv/bin/activate
-pip install --upgrade pip -q
-pip install -r requirements.txt -q
-
-# 8. Create start-web.sh helper
-echo "[8/9] Creating ~/start-web.sh..."
-cat << 'HELPER' > "$HOME/start-web.sh"
-#!/bin/bash
-cd ~/space-station
-source .venv/bin/activate
-python web/app.py "$@"
-HELPER
-chmod +x "$HOME/start-web.sh"
-
-# 9. Add convenience aliases
-echo "[9/9] Adding shell aliases..."
-ALIAS_BLOCK='
-# Space Station aliases
-alias ss-update="cd ~/space-station && git pull && source .venv/bin/activate"
-alias ss-start="cd ~/space-station && source .venv/bin/activate && python web/app.py"
-alias ss-test="cd ~/space-station && source .venv/bin/activate && python scripts/spin_test.py"
-alias ss-debug="cd ~/space-station && source .venv/bin/activate && python scripts/motor_test.py test-all"
-'
-
-if ! grep -q "Space Station aliases" "$HOME/.bashrc" 2>/dev/null; then
-    echo "$ALIAS_BLOCK" >> "$HOME/.bashrc"
-fi
-
-# Smoke tests
-echo ""
-echo "========================================="
-echo "  Smoke Tests"
-echo "========================================="
-
-# Test lgpio
-if python3 -c "import lgpio; h=lgpio.gpiochip_open(0); print('OK'); lgpio.gpiochip_close(h)" 2>/dev/null; then
-    echo "✓ lgpio: connected to gpiochip0"
+# -----------------------------------------------------------------------------
+# RTL-SDR udev rules + DVB blacklist
+# -----------------------------------------------------------------------------
+RTLSDR_RULES=/etc/udev/rules.d/20-rtlsdr.rules
+if [ ! -f "$RTLSDR_RULES" ]; then
+    info "Writing $RTLSDR_RULES ..."
+    sudo tee "$RTLSDR_RULES" >/dev/null <<'EOF'
+# RTL-SDR (Realtek RTL2832U) -- accessible to the plugdev group
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2832", MODE="0660", GROUP="plugdev"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="2838", MODE="0660", GROUP="plugdev"
+EOF
+    ok "RTL-SDR udev rules installed."
 else
-    echo "✗ lgpio: cannot open gpiochip0 (may need reboot or permissions)"
+    ok "RTL-SDR udev rules already present -- leaving as-is."
 fi
 
-# Test pigpio (optional — just report status)
-if python3 -c "import pigpio; pi=pigpio.pi(); c=pi.connected; pi.stop(); exit(0 if c else 1)" 2>/dev/null; then
-    echo "✓ pigpio daemon: connected (optional)"
+DVB_BLACKLIST=/etc/modprobe.d/rtl-sdr-blacklist.conf
+if [ ! -f "$DVB_BLACKLIST" ]; then
+    info "Writing $DVB_BLACKLIST ..."
+    sudo tee "$DVB_BLACKLIST" >/dev/null <<'EOF'
+# Prevent the kernel DVB driver from claiming the RTL-SDR dongle
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+EOF
+    ok "DVB blacklist installed."
 else
-    echo "· pigpio daemon: not running (OK — using lgpio)"
+    ok "DVB blacklist already present -- leaving as-is."
 fi
 
-# Test I2C
-if command -v i2cdetect &> /dev/null; then
-    echo "✓ I2C tools: installed"
+info "Reloading udev..."
+sudo udevadm control --reload-rules || warn "udevadm reload-rules failed."
+sudo udevadm trigger || warn "udevadm trigger failed."
+
+# -----------------------------------------------------------------------------
+# Python venv
+# -----------------------------------------------------------------------------
+if [ ! -d "$VENV_DIR" ]; then
+    info "Creating Python venv at $VENV_DIR (with --system-site-packages)..."
+    python3 -m venv --system-site-packages "$VENV_DIR"
 else
-    echo "✗ I2C tools: not found"
+    ok "Python venv already exists at $VENV_DIR."
 fi
 
-# Test Python deps
-if source "$INSTALL_DIR/.venv/bin/activate" && python3 -c "import yaml, click, rich, fastapi" 2>/dev/null; then
-    echo "✓ Python deps: OK"
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate"
+pip install --upgrade pip || warn "pip upgrade failed."
+if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+    pip install -r "$INSTALL_DIR/requirements.txt" || warn "pip install -r requirements.txt failed."
 else
-    echo "✗ Python deps: some missing"
+    warn "No requirements.txt at $INSTALL_DIR -- skipping pip install."
 fi
+deactivate || true
 
-# USB boot check
-echo ""
-if command -v vcgencmd &> /dev/null; then
-    BOOT_ORDER=$(vcgencmd bootloader_config 2>/dev/null | grep BOOT_ORDER || echo "")
-    if [ -n "$BOOT_ORDER" ]; then
-        echo "Boot config: $BOOT_ORDER"
+# -----------------------------------------------------------------------------
+# Convenience aliases (idempotent: only append if missing)
+# -----------------------------------------------------------------------------
+BASHRC="$HOME/.bashrc"
+add_alias() {
+    local name="$1"
+    local body="$2"
+    if [ -f "$BASHRC" ] && grep -q "alias $name=" "$BASHRC"; then
+        ok "alias $name already present in ~/.bashrc"
+    else
+        echo "alias $name=$body" >> "$BASHRC"
+        ok "added alias $name to ~/.bashrc"
     fi
+}
+
+info "Installing convenience aliases..."
+add_alias ss-update "'cd $INSTALL_DIR && git pull'"
+add_alias ss-start  "'cd $INSTALL_DIR && source .venv/bin/activate && python -m web.app --port 8080'"
+add_alias ss-test   "'cd $INSTALL_DIR && source .venv/bin/activate && python scripts/motor_test.py --dry-run test-all'"
+add_alias ss-debug  "'cd $INSTALL_DIR && source .venv/bin/activate && python -m tracker.controller --sim status'"
+
+# -----------------------------------------------------------------------------
+# Smoke tests (never abort the script)
+# -----------------------------------------------------------------------------
+info "Running smoke tests..."
+
+CHECK="✓"
+CROSS="✗"
+
+if python3 -c "import lgpio; h = lgpio.gpiochip_open(0); lgpio.gpiochip_close(h)" 2>/dev/null; then
+    echo "${GREEN}${CHECK}${RESET} lgpio: gpiochip0 opens cleanly"
+else
+    echo "${RED}${CROSS}${RESET} lgpio: could not open gpiochip0 (expected on non-Pi)"
 fi
 
-echo ""
-echo "========================================="
-echo "  Setup Complete!"
-echo "========================================="
-echo ""
-echo "Next steps:"
-echo "  1. Reboot:     sudo reboot"
-echo "  2. SSH in:     ssh $(whoami)@$(hostname).local"
-echo "  3. Spin test:  cd ~/space-station && source .venv/bin/activate && python scripts/spin_test.py"
-echo "  4. Web UI:     ~/start-web.sh  (then open http://$(hostname).local:8080)"
-echo "  5. Debug page: http://$(hostname).local:8080/debug"
-echo ""
+if python3 -c "import yaml, click, rich, fastapi" 2>/dev/null; then
+    echo "${GREEN}${CHECK}${RESET} Python deps: yaml, click, rich, fastapi all import"
+else
+    echo "${RED}${CROSS}${RESET} Python deps: one or more of yaml/click/rich/fastapi failed to import"
+fi
+
+if command -v lsusb >/dev/null 2>&1 && lsusb | grep -qiE 'realtek|rtl'; then
+    echo "${GREEN}${CHECK}${RESET} RTL-SDR detected on USB"
+else
+    echo "${RED}${CROSS}${RESET} RTL-SDR not detected on USB (plug the dongle in and re-check with lsusb)"
+fi
+
+# -----------------------------------------------------------------------------
+# Final summary
+# -----------------------------------------------------------------------------
+cat <<EOF
+
+${GREEN}=== Bootstrap complete ===${RESET}
+
+Convenience aliases installed in ~/.bashrc:
+  ss-update   git pull in $INSTALL_DIR
+  ss-start    activate venv and launch the web UI on :8080
+  ss-test     run motor_test.py in --dry-run mode
+  ss-debug    run the tracker controller in --sim mode
+
+Run:  ${YELLOW}source ~/.bashrc${RESET}   to pick the aliases up in the current shell.
+
+EOF
