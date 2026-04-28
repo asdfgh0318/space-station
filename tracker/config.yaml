@@ -1,115 +1,86 @@
-# =============================================================================
-# space-station — alt-az antenna tracker config
-# Hardware: Raspberry Pi 4B + Waveshare Stepper Motor HAT (B), 2x NEMA 17
-# Drive:    GT2 belt, 1:1 ratio (20T -> 20T) on both azimuth and elevation
-# Note:     `bands`, `targets`, and `sniffer` sections are seams for the
-#           upcoming inmarsat-sniffer integration. See docs/archive/merge_plan.html
-# =============================================================================
-
 site:
-  name: "Warsaw"
+  name: Warsaw
   latitude: 52.2297
   longitude: 21.0122
-  elevation: 100  # meters above sea level
-
+  elevation: 100
 tracker:
-  type: "alt-az"
-  driver: "waveshare_hat_b"
-
-  # Park position (safe stowed pose, dish pointed at zenith)
+  type: alt-az
+  driver: waveshare_hat_b
   park_azimuth: 0.0
   park_elevation: 90.0
-  position_tolerance: 0.1   # deg — "on target" threshold
-  tracking_interval: 0.5    # seconds between pointing updates
-
+  position_tolerance: 0.1
+  tracking_interval: 0.5
   azimuth:
-    gear_ratio: 1           # 1:1 GT2 belt, 20T pulleys both ends
-    steps_per_rev: 200      # NEMA 17 full-step
-    microstepping: 32       # 200 * 32 * 1 = 6400 microsteps/rev → 0.05625°/step
-    min_angle: 0
-    max_angle: 360
-    max_speed: 15.0         # deg/s
-    acceleration: 8.0       # deg/s²
-    step_pin: 19            # BCM
-    dir_pin: 13             # BCM
-    enable_pin: 12          # BCM
-    home_switch_pin: 5      # BCM
+    gear_ratio: 1
+    steps_per_rev: 200
+    microstepping: 32
+    min_angle: 0.0
+    max_angle: 360.0
+    max_speed: 6.0
+    acceleration: 3.0
+    step_pin: 19
+    dir_pin: 13
+    enable_pin: 12
+    home_switch_pin: 5
     home_switch_enabled: false
     home_offset: 0.0
-
   elevation:
-    gear_ratio: 1           # 1:1 GT2 belt, 20T pulleys both ends
-    steps_per_rev: 200      # NEMA 17 full-step
-    microstepping: 32       # 200 * 32 * 1 = 6400 microsteps/rev → 0.05625°/step
-    min_angle: 0
-    max_angle: 90
-    max_speed: 12.0         # deg/s
-    acceleration: 6.0       # deg/s²
-    step_pin: 18            # BCM
-    dir_pin: 24             # BCM
-    enable_pin: 4           # BCM
-    home_switch_pin: 6      # BCM
+    gear_ratio: 1
+    steps_per_rev: 200
+    microstepping: 32
+    min_angle: 0.0
+    max_angle: 90.0
+    max_speed: 6.0
+    acceleration: 3.0
+    step_pin: 18
+    dir_pin: 24
+    enable_pin: 4
+    home_switch_pin: 6
     home_switch_enabled: false
     home_offset: 0.0
-
-# -----------------------------------------------------------------------------
-# RF band profiles. Both disabled by default — flip `enabled: true` per band
-# when the corresponding hardware is wired up.
-# -----------------------------------------------------------------------------
 bands:
   l_band:
     enabled: false
-    sample_rate: 2400000          # 2.4 Msps — RTL-SDR sweet spot
-    gain: 40.0                    # dB
-    freq_min: 1525000000          # 1525.0 MHz
-    freq_max: 1559000000          # 1559.0 MHz
-    notes: "Direct RTL-SDR, no LO/LNB. Inmarsat downlink band."
-
+    sample_rate: 2400000
+    gain: 40.0
+    freq_min: 1525000000
+    freq_max: 1559000000
+    notes: Direct RTL-SDR, no LO/LNB. Inmarsat downlink band.
   ku_band:
     enabled: false
     lnb:
-      model: "Inverto IDLB-SINL40"
-      type: "PLL"
-      lo_low: 9750000000          # 9.75 GHz  (low band LO)
-      lo_high: 10600000000        # 10.6 GHz  (high band LO, selected via 22 kHz tone)
-      switch_freq: 11700000000    # 11.7 GHz  (above this → high band)
+      model: Inverto IDLB-SINL40
+      type: PLL
+      lo_low: 9750000000
+      lo_high: 10600000000
+      switch_freq: 11700000000
     gpio:
-      power_pin: 23               # BCM — LNB DC power enable
-      voltage_select_pin: 25      # BCM — 13V/18V polarization select
-      tone_pin: 26                # BCM — 22 kHz tone for hi/lo band switch
-    notes: "Dish + LNB. Phase 4 maser detection target."
-
-# -----------------------------------------------------------------------------
-# Geostationary target presets. `band` references a key under `bands:`.
-# sat_longitude is in degrees (east positive, west negative).
-# -----------------------------------------------------------------------------
+      power_pin: 23
+      voltage_select_pin: 25
+      tone_pin: 26
+    notes: Dish + LNB. Phase 4 maser detection target.
 targets:
   alphasat_25e:
-    name: "Inmarsat 4F2 / Alphasat (25°E)"
+    name: "Inmarsat 4F2 / Alphasat (25\xB0E)"
     sat_longitude: 25.0
-    band: "l_band"
+    band: l_band
   inmarsat_4f3_98w:
-    name: "Inmarsat 4F3 (98°W)"
+    name: "Inmarsat 4F3 (98\xB0W)"
     sat_longitude: -98.0
-    band: "l_band"
+    band: l_band
   inmarsat_3f5_54w:
-    name: "Inmarsat 3F5 (54°W)"
+    name: "Inmarsat 3F5 (54\xB0W)"
     sat_longitude: -54.0
-    band: "l_band"
+    band: l_band
   inmarsat_f1_143_5e:
-    name: "Inmarsat F1 (143.5°E)"
+    name: "Inmarsat F1 (143.5\xB0E)"
     sat_longitude: 143.5
-    band: "l_band"
-
-# -----------------------------------------------------------------------------
-# inmarsat-sniffer sidecar. Dormant until the binary is vendored as a git
-# submodule under vendor/inmarsat-sniffer/. Flip `enabled: true` after build.
-# -----------------------------------------------------------------------------
+    band: l_band
 sniffer:
   enabled: false
-  binary_path: "vendor/inmarsat-sniffer/build/inmarsat-sniffer"
-  feed_udp_host: "127.0.0.1"
+  binary_path: vendor/inmarsat-sniffer/build/inmarsat-sniffer
+  feed_udp_host: 127.0.0.1
   feed_udp_port: 5000
-  skip_c_channel: true            # Pi 4 default — saves ~27% CPU per upstream README
-  web_port: 8888                  # sniffer's own UI, iframed in our dashboard
-  default_target: "alphasat_25e"
+  skip_c_channel: true
+  web_port: 8888
+  default_target: alphasat_25e

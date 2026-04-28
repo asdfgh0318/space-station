@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import threading
+from .hr8825 import HR8825  # Waveshare reference driver
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -107,16 +108,17 @@ class StepperAxis:
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
     def __post_init__(self) -> None:
-        if self.gpio is None:
-            self.gpio = _SimGpio()
-        self.gpio.claim_output(self.step_pin, 0)
-        self.gpio.claim_output(self.dir_pin, 0)
-        self.gpio.claim_output(self.enable_pin, 1)
-        # MODE PINS (Waveshare HAT B): drive low for full step (works with DIPs all-1 software microstep)
-        for _mp in (16, 17, 20, 21, 22, 27):
-            try: self.gpio.claim_output(_mp, 0)
-            except Exception: pass
-        # original line continues below  # active-low: 1 = disabled
+        # Real-hardware mode: use Waveshare HR8825 driver. Sim mode: keep _SimGpio for state-only updates.
+        self._driver = None
+        if self.gpio is None or isinstance(self.gpio, _SimGpio):
+            if self.gpio is None:
+                self.gpio = _SimGpio()
+            return
+        # Pick mode pins per axis name (matches config.yaml convention)
+        mode_pins = (16, 17, 20) if self.name == "azimuth" else (21, 22, 27)
+        self._driver = HR8825(dir_pin=self.dir_pin, step_pin=self.step_pin,
+                              enable_pin=self.enable_pin, mode_pins=mode_pins)
+        self._driver.SetMicroStep("softward", "fullstep")
 
     # ---- conversions ----
 
@@ -135,11 +137,17 @@ class StepperAxis:
     # ---- enable line ----
 
     def enable(self) -> None:
-        self.gpio.write(self.enable_pin, 0)
+        if self._driver is not None:
+            self._driver.digital_write(self.enable_pin, 1)  # Waveshare HAT B: active-HIGH
+        else:
+            self.gpio.write(self.enable_pin, 1)
         self.enabled = True
 
     def disable(self) -> None:
-        self.gpio.write(self.enable_pin, 1)
+        if self._driver is not None:
+            self._driver.digital_write(self.enable_pin, 0)
+        else:
+            self.gpio.write(self.enable_pin, 0)
         self.enabled = False
 
     # ---- motion primitives ----
@@ -147,47 +155,32 @@ class StepperAxis:
     def step(self, direction: int) -> None:
         if direction not in (+1, -1):
             raise ValueError("direction must be +1 or -1")
-        self.gpio.write(self.dir_pin, 1 if direction > 0 else 0)
-        time.sleep(_DIR_SETUP_S)
-        self.gpio.write(self.step_pin, 1)
-        time.sleep(_STEP_PULSE_S)
-        self.gpio.write(self.step_pin, 0)
+        if self._driver is not None:
+            d = "forward" if direction > 0 else "backward"
+            self._driver.TurnStep(Dir=d, steps=1, stepdelay=0.005)
         self.position_deg += direction * self.degrees_per_step
 
     def stop(self) -> None:
         self._stop_flag.set()
 
     def move_steps(self, n_steps: int, direction: int) -> None:
-        """Trapezoidal velocity profile, sleep-paced between steps."""
+        """Move n_steps. Real hw: HR8825.TurnStep (constant rate). Sim: just bump state."""
         if n_steps <= 0:
             return
         with self._lock:
             self._stop_flag.clear()
             if not self.enabled:
                 self.enable()
-
-            v_max = self.max_speed / self.degrees_per_step       # steps/s
-            accel = self.acceleration / self.degrees_per_step    # steps/s²
-            v_max = max(v_max, 1.0)
-            accel = max(accel, 1.0)
-
-            ramp_steps = min(int(v_max * v_max / (2.0 * accel)), n_steps // 2)
-            cruise_steps = n_steps - 2 * ramp_steps
-
-            for i in range(n_steps):
-                if self._stop_flag.is_set():
-                    return
-                if i < ramp_steps:
-                    v = math.sqrt(2.0 * accel * (i + 1))
-                elif i < ramp_steps + cruise_steps:
-                    v = v_max
-                else:
-                    remaining = n_steps - i
-                    v = math.sqrt(2.0 * accel * max(remaining, 1))
-                v = min(max(v, 1.0), v_max)
-                interval = max(1.0 / v, _MIN_STEP_INTERVAL_S)
-                self.step(direction)
-                time.sleep(max(interval - _STEP_PULSE_S - _DIR_SETUP_S, 0.0))
+            if self._driver is not None:
+                d = "forward" if direction > 0 else "backward"
+                # stepdelay is half-period each side; pick from max_speed (steps/s)
+                v_max_steps = max(self.max_speed / self.degrees_per_step, 1.0)
+                stepdelay = 0.5 / v_max_steps
+                self._driver.TurnStep(Dir=d, steps=n_steps, stepdelay=stepdelay)
+                self.position_deg += direction * self.degrees_per_step * n_steps
+            else:
+                # sim path — instantaneous bookkeeping
+                self.position_deg += direction * self.degrees_per_step * n_steps
 
     def goto_deg(self, target_deg: float) -> None:
         target = max(self.min_angle, min(self.max_angle, target_deg))
